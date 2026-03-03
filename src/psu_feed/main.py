@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import html
 import httpx
-from fastapi import FastAPI, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import settings as settings_module
 from .config import (
     FEED_DESCRIPTION,
     FEED_DISPLAY_NAME,
@@ -240,3 +241,188 @@ async def dev_feed(
     </body></html>
     """
     return HTMLResponse(full)
+
+
+# --- Admin UI (keywords & authorities) ---
+
+def _validate_did(did: str) -> bool:
+    return isinstance(did, str) and did.strip().startswith("did:")
+
+
+@app.get("/admin/settings")
+async def admin_get_settings():
+    """Return current keywords, negative_keywords, and authorities for the admin UI."""
+    return {
+        "keywords": settings_module.get_keywords(),
+        "negative_keywords": settings_module.get_negative_keywords(),
+        "authorities": settings_module.get_authorities(),
+    }
+
+
+@app.put("/admin/settings")
+async def admin_put_settings(body: dict = Body(...)):
+    """Validate and save settings from the admin UI."""
+    keywords = body.get("keywords")
+    negative_keywords = body.get("negative_keywords")
+    authorities = body.get("authorities")
+    if keywords is not None and not isinstance(keywords, list):
+        raise HTTPException(400, "keywords must be a list")
+    if negative_keywords is not None and not isinstance(negative_keywords, list):
+        raise HTTPException(400, "negative_keywords must be a list")
+    if authorities is not None and not isinstance(authorities, list):
+        raise HTTPException(400, "authorities must be a list")
+    if isinstance(keywords, list) and not all(isinstance(k, str) for k in keywords):
+        raise HTTPException(400, "keywords must be strings")
+    if isinstance(negative_keywords, list) and not all(isinstance(k, str) for k in negative_keywords):
+        raise HTTPException(400, "negative_keywords must be strings")
+    if isinstance(authorities, list):
+        for a in authorities:
+            if not isinstance(a, dict) or not _validate_did(a.get("did") or ""):
+                raise HTTPException(400, "authorities must be list of {did, label} with valid did")
+            if "label" not in a:
+                a["label"] = a.get("did", "")
+    data = {
+        "keywords": keywords if keywords is not None else settings_module.get_keywords(),
+        "negative_keywords": negative_keywords if negative_keywords is not None else settings_module.get_negative_keywords(),
+        "authorities": authorities if authorities is not None else settings_module.get_authorities(),
+    }
+    settings_module.save_settings(data)
+    return {"ok": True}
+
+
+ADMIN_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSU Feed — Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 min-h-screen">
+  <div class="max-w-4xl mx-auto px-4 py-8">
+    <h1 class="text-2xl font-bold text-slate-800 mb-6">PSU Feed — Admin</h1>
+    <p class="text-slate-600 mb-6">Manage keywords and authority accounts. Changes take effect after you click Save; the ingester picks them up within about 60 seconds.</p>
+
+    <div id="message" class="mb-4 hidden rounded px-4 py-2"></div>
+
+    <div class="grid gap-6 md:grid-cols-1">
+      <!-- Keywords -->
+      <section class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-lg font-semibold text-slate-800 mb-3">Keywords</h2>
+        <ul id="keywords-list" class="space-y-2 mb-3"></ul>
+        <div class="flex gap-2 flex-wrap">
+          <input type="text" id="keyword-input" placeholder="Regex keyword (e.g. Nittany\\\\s?Lions?)" class="flex-1 min-w-[200px] border border-slate-300 rounded px-3 py-2">
+          <button type="button" id="keyword-add" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Add</button>
+        </div>
+      </section>
+
+      <!-- Negative keywords -->
+      <section class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-lg font-semibold text-slate-800 mb-3">Negative keywords</h2>
+        <ul id="negative-keywords-list" class="space-y-2 mb-3"></ul>
+        <div class="flex gap-2 flex-wrap">
+          <input type="text" id="negative-keyword-input" placeholder="Regex (e.g. Power\\\\s?Supply)" class="flex-1 min-w-[200px] border border-slate-300 rounded px-3 py-2">
+          <button type="button" id="negative-keyword-add" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Add</button>
+        </div>
+      </section>
+
+      <!-- Authorities -->
+      <section class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-lg font-semibold text-slate-800 mb-3">Authorities</h2>
+        <ul id="authorities-list" class="space-y-2 mb-3"></ul>
+        <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <input type="text" id="authority-did" placeholder="DID (e.g. did:plc:...)" class="flex-1 min-w-[200px] border border-slate-300 rounded px-3 py-2">
+          <input type="text" id="authority-label" placeholder="Label" class="flex-1 min-w-[120px] border border-slate-300 rounded px-3 py-2">
+          <button type="button" id="authority-add" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Add</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="mt-6 flex gap-3">
+      <button type="button" id="save" class="bg-green-600 text-white px-5 py-2 rounded hover:bg-green-700">Save changes</button>
+      <button type="button" id="reset" class="bg-slate-500 text-white px-5 py-2 rounded hover:bg-slate-600">Reset</button>
+    </div>
+  </div>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    function showMessage(text, isError) {
+      messageEl.textContent = text;
+      messageEl.className = 'mb-4 rounded px-4 py-2 ' + (isError ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800');
+      messageEl.classList.remove('hidden');
+    }
+    function hideMessage() { messageEl.classList.add('hidden'); }
+
+    let state = { keywords: [], negative_keywords: [], authorities: [] };
+
+    function renderKeywords() {
+      const ul = document.getElementById('keywords-list');
+      ul.innerHTML = state.keywords.map((k, i) =>
+        '<li class="flex items-center justify-between gap-2 py-1"><code class="text-sm bg-slate-100 px-2 py-0.5 rounded break-all">' + escapeHtml(k) + '</code><button type="button" class="delete-keyword text-red-600 hover:underline" data-i="' + i + '">Delete</button></li>'
+      ).join('') || '<li class="text-slate-500 text-sm">No keywords yet.</li>';
+      ul.querySelectorAll('.delete-keyword').forEach(btn => btn.addEventListener('click', () => { state.keywords.splice(+btn.dataset.i, 1); renderKeywords(); }));
+    }
+    function renderNegativeKeywords() {
+      const ul = document.getElementById('negative-keywords-list');
+      ul.innerHTML = state.negative_keywords.map((k, i) =>
+        '<li class="flex items-center justify-between gap-2 py-1"><code class="text-sm bg-slate-100 px-2 py-0.5 rounded break-all">' + escapeHtml(k) + '</code><button type="button" class="delete-negative text-red-600 hover:underline" data-i="' + i + '">Delete</button></li>'
+      ).join('') || '<li class="text-slate-500 text-sm">No negative keywords yet.</li>';
+      ul.querySelectorAll('.delete-negative').forEach(btn => btn.addEventListener('click', () => { state.negative_keywords.splice(+btn.dataset.i, 1); renderNegativeKeywords(); }));
+    }
+    function renderAuthorities() {
+      const ul = document.getElementById('authorities-list');
+      ul.innerHTML = state.authorities.map((a, i) =>
+        '<li class="flex items-center justify-between gap-2 py-1"><span class="text-sm"><code class="bg-slate-100 px-1 rounded">' + escapeHtml(a.did) + '</code> ' + escapeHtml(a.label || '') + '</span><button type="button" class="delete-authority text-red-600 hover:underline" data-i="' + i + '">Delete</button></li>'
+      ).join('') || '<li class="text-slate-500 text-sm">No authorities yet.</li>';
+      ul.querySelectorAll('.delete-authority').forEach(btn => btn.addEventListener('click', () => { state.authorities.splice(+btn.dataset.i, 1); renderAuthorities(); }));
+    }
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    async function load() {
+      const r = await fetch('/admin/settings');
+      if (!r.ok) throw new Error(r.statusText);
+      state = await r.json();
+      renderKeywords();
+      renderNegativeKeywords();
+      renderAuthorities();
+    }
+    document.getElementById('keyword-add').addEventListener('click', () => {
+      const v = document.getElementById('keyword-input').value.trim();
+      if (v) { state.keywords.push(v); document.getElementById('keyword-input').value = ''; renderKeywords(); }
+    });
+    document.getElementById('negative-keyword-add').addEventListener('click', () => {
+      const v = document.getElementById('negative-keyword-input').value.trim();
+      if (v) { state.negative_keywords.push(v); document.getElementById('negative-keyword-input').value = ''; renderNegativeKeywords(); }
+    });
+    document.getElementById('authority-add').addEventListener('click', () => {
+      const did = document.getElementById('authority-did').value.trim();
+      const label = document.getElementById('authority-label').value.trim();
+      if (did && did.startsWith('did:')) { state.authorities.push({ did, label: label || did }); document.getElementById('authority-did').value = ''; document.getElementById('authority-label').value = ''; renderAuthorities(); } else { showMessage('DID must start with did:', true); }
+    });
+    document.getElementById('save').addEventListener('click', async () => {
+      hideMessage();
+      try {
+        const r = await fetch('/admin/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
+        if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+        showMessage('Saved.', false);
+      } catch (e) { showMessage(e.message || 'Save failed', true); }
+    });
+    document.getElementById('reset').addEventListener('click', () => { load(); hideMessage(); });
+
+    load();
+  </script>
+</body>
+</html>
+"""
+
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
+async def admin_page():
+    """Serve the admin UI for keywords and authorities."""
+    return HTMLResponse(ADMIN_HTML)

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import websockets
 from aiosqlite import Connection as SQLiteConnection
 
-from .config import AUTHORITY_DIDS, JETSTREAM_WS_URL
+from .config import get_authority_dids, JETSTREAM_WS_URL
 from .db import (
     get_connection,
     init_db,
@@ -22,9 +22,12 @@ from .db import (
     increment_user_match_count,
 )
 from .filter import is_relevant_post
+from . import settings as settings_module
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# Expected for long-lived WS: server/network drops without close frame; we reconnect.
+logging.getLogger("websockets").setLevel(logging.ERROR)
 
 # Collections we subscribe to
 WANTED_COLLECTIONS = [
@@ -69,13 +72,14 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     text = _text_from_post_record(record)
     keyword_matched = 1 if is_relevant_post(text) else 0
     # Authority DIDs: include all posts (keyword_matched=0 when no PSU keywords). Others: only when keywords match.
-    if did not in AUTHORITY_DIDS and not keyword_matched:
+    authority_dids = get_authority_dids()
+    if did not in authority_dids and not keyword_matched:
         return
     uri = _build_post_uri(did, path)
     created_at = _parse_created_at(record) or datetime.now(timezone.utc)
     cid = commit.get("cid") or ""
     await insert_post(conn, uri, cid, did, created_at, keyword_matched=keyword_matched)
-    if did in AUTHORITY_DIDS:
+    if did in authority_dids:
         await upsert_user_authority(conn, did, HARDCODED_AUTHORITY)
     else:
         await increment_user_match_count(conn, did)
@@ -111,6 +115,13 @@ async def _handle_repost_create(conn: SQLiteConnection, commit: dict) -> None:
     logger.debug("repost subject=%s", uri[:60])
 
 
+async def _reload_settings_loop() -> None:
+    """Every 60s re-read settings file so UI edits are picked up without restart."""
+    while True:
+        await asyncio.sleep(60)
+        settings_module.reload_if_changed()
+
+
 async def _process_message(conn: SQLiteConnection, raw: str) -> None:
     try:
         data = json.loads(raw)
@@ -143,6 +154,7 @@ async def run_ingester() -> None:
     logger.info("connecting to %s", full_url.split("?")[0])
     while True:
         try:
+            settings_module.reload_if_changed()
             async with websockets.connect(
                 full_url,
                 ping_interval=30,
@@ -150,14 +162,22 @@ async def run_ingester() -> None:
                 close_timeout=5,
             ) as ws:
                 conn = await get_connection()
+                reload_task = asyncio.create_task(_reload_settings_loop())
+
                 try:
                     async for message in ws:
                         await _process_message(conn, message)
                         await conn.commit()
                 finally:
+                    reload_task.cancel()
+                    try:
+                        await reload_task
+                    except asyncio.CancelledError:
+                        pass
                     await conn.close()
         except websockets.ConnectionClosed as e:
-            logger.warning("connection closed: %s", e)
+            # Normal for long-lived connections: server/network may drop without close frame
+            logger.info("connection closed (%s), reconnecting in 5s", e)
         except Exception as e:
             logger.exception("ingester error: %s", e)
         await asyncio.sleep(5)

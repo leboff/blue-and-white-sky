@@ -16,7 +16,7 @@ from atproto import Client
 from atproto_client.models.app.bsky.feed.get_author_feed import Params as AuthorFeedParams
 from atproto_client.models.app.bsky.feed.search_posts import Params as SearchPostsParams
 
-from .authority_dids import AUTHORITY_ACCOUNTS, AUTHORITY_DIDS
+from .authority_dids import get_authority_accounts, get_authority_dids
 from .config import BLUESKY_APP_PASSWORD, BLUESKY_HANDLE, DATABASE_PATH
 from .db import (
     get_connection,
@@ -100,7 +100,7 @@ def _backfill_authority(
     """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count, keyword_matched)."""
     all_rows: list[tuple[str, str, str, datetime, int | None, int]] = []
     seen_uris: set[str] = set()
-    for did, label in AUTHORITY_ACCOUNTS:
+    for did, label in get_authority_accounts():
         cursor = None
         count_this = 0
         total_fetched = 0
@@ -284,7 +284,7 @@ def main() -> None:
     client.login(BLUESKY_HANDLE, BLUESKY_APP_PASSWORD)
 
     all_rows: list[tuple[str, str, str, datetime, int | None, int]] = []
-    if do_authority and AUTHORITY_ACCOUNTS:
+    if do_authority and get_authority_accounts():
         auth_rows = _backfill_authority(
             client, verbose=args.verbose, skip_filter=args.authority_no_filter
         )
@@ -308,7 +308,7 @@ def main() -> None:
         logger.info("No posts to insert")
         return
     logger.info("Inserting %d posts", len(all_rows))
-    asyncio.run(_write_batch(all_rows, AUTHORITY_DIDS))
+    asyncio.run(_write_batch(all_rows, get_authority_dids()))
     logger.info("Backfill done. DB: %s", DATABASE_PATH)
 
 
