@@ -219,7 +219,7 @@ def _backfill_authority(
 
 
 # Max search pages per query (100 posts per page). Stops search from running forever.
-DEFAULT_SEARCH_MAX_PAGES = 100
+DEFAULT_SEARCH_MAX_PAGES = 20
 
 
 def _backfill_search(

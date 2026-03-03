@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import httpx
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import settings as settings_module
@@ -23,6 +23,26 @@ from .ranking import calculate_hn_score, effective_authority_multiplier
 app = FastAPI(title="Penn State Football Feed")
 
 BSKY_GET_POSTS_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts"
+
+
+@app.get("/.well-known/did.json")
+async def well_known_did(request: Request):
+    """Serve did:web DID document so Bluesky can resolve FEED_SERVICE_DID to this server."""
+    base = str(request.base_url).rstrip("/")
+    return JSONResponse(
+        content={
+            "id": FEED_SERVICE_DID,
+            "service": [
+                {
+                    "id": "#bsky_fg",
+                    "type": "BskyFeedGenerator",
+                    "serviceEndpoint": base,
+                }
+            ],
+        }
+    )
+
+
 GET_POSTS_BATCH = 25
 
 
