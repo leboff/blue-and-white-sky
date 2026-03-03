@@ -302,3 +302,25 @@ sudo ufw enable
 - [ ] Feed appears in Bluesky and stays updated (ingester running)
 
 If something breaks, check `journalctl -u psu-feed-api` and `journalctl -u psu-feed-ingester` and Nginx error logs.
+
+---
+
+## 13. Deploying with Dokploy
+
+You can easily deploy this project using [Dokploy](https://docs.dokploy.com/docs/core). The repository includes a `Dockerfile` and `docker-compose.yml` ready for Dokploy's Compose deployments.
+
+1. **Create a new Compose Application:** In your Dokploy dashboard, navigate to a project and select "Create Compose".
+2. **Source:** Select Git as the source and connect this repository.
+3. **Environment Variables:** In the Environment tab of your application in Dokploy, provide your configuration:
+   ```env
+   BLUESKY_HANDLE=yourhandle.bsky.social
+   BLUESKY_APP_PASSWORD=your-app-password
+   FEED_SERVICE_DID=did:web:yourdomain.com
+   FEED_DISPLAY_NAME=Penn State Football
+   ```
+4. **Deploy:** Deploy the application. Dokploy will build the images and launch both the `api` and `ingester` services. The shared data volume (`psu_feed_data`) will persist your database and settings.
+5. **Domains:** Configure your domain in Dokploy to route external HTTPS traffic to the `api` service (which runs on port `8000`).
+6. **Publishing the Feed:** After the services are running and your domain is accessible, open a terminal session into the `api` container through Dokploy and run:
+   ```bash
+   python -m psu_feed.publish_feed
+   ```
