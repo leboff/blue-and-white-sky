@@ -3,6 +3,11 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load .env from project root so BLUESKY_HANDLE / BLUESKY_APP_PASSWORD work without exporting
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
 # Database
 DATABASE_PATH = Path(
     os.environ.get("DATABASE_PATH", str(Path(__file__).resolve().parent.parent.parent / "data" / "psu_feed.db"))

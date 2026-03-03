@@ -18,6 +18,7 @@ PSU_FOOTBALL_KEYWORDS = [
     r"Penn\s?State",
     r"\bPSU\b",
     # Current Coaching Staff (2026)
+    r"James\s?Franklin",
     r"Matt\s?Campbell",
     r"Taylor\s?Mouser",
     r"D'?Anton\s?Lynn",
