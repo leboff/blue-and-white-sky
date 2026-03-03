@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+from .config import AUTHORITY_OFFTOPIC_PENALTY
+
 # Max boost from followers (e.g. 1.5 = up to 50% boost). Tuned so 10k followers ~ 1.2x, 100k ~ 1.4x.
 FOLLOWER_BOOST_MAX = 0.5
-
 
 def follower_boost(followers_count: int | None) -> float:
     """Multiplier from follower count: 1.0 when unknown/0, up to 1 + FOLLOWER_BOOST_MAX for large accounts."""
@@ -18,9 +19,16 @@ def follower_boost(followers_count: int | None) -> float:
     return 1.0 + min(FOLLOWER_BOOST_MAX, log / 10.0)
 
 
-def effective_authority_multiplier(base_mult: float, followers_count: int | None) -> float:
-    """Authority multiplier = specified-DID/match-count base, then boosted by followers."""
-    return base_mult * follower_boost(followers_count)
+def effective_authority_multiplier(
+    base_mult: float,
+    followers_count: int | None,
+    keyword_matched: int = 1,
+) -> float:
+    """Authority multiplier = base * follower_boost * (1.0 or AUTHORITY_OFFTOPIC_PENALTY if no keyword match)."""
+    mult = base_mult * follower_boost(followers_count)
+    if keyword_matched:
+        return mult
+    return mult * AUTHORITY_OFFTOPIC_PENALTY
 
 
 def calculate_hn_score(

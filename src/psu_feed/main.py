@@ -62,8 +62,17 @@ async def get_feed_skeleton(
         await conn.close()
 
     scored = [
-        (uri, calculate_hn_score(likes, reposts, effective_authority_multiplier(mult, followers), created_at, GRAVITY))
-        for uri, likes, reposts, mult, followers, created_at in rows
+        (
+            uri,
+            calculate_hn_score(
+                likes,
+                reposts,
+                effective_authority_multiplier(mult, followers, keyword_matched),
+                created_at,
+                GRAVITY,
+            ),
+        )
+        for uri, likes, reposts, mult, followers, keyword_matched, created_at in rows
     ]
     scored.sort(key=lambda x: -x[1])
     top = scored[:limit]
@@ -94,8 +103,17 @@ async def _get_ranked_skeleton(
     finally:
         await conn.close()
     scored = [
-        (uri, calculate_hn_score(likes, reposts, effective_authority_multiplier(mult, followers), created_at, gravity))
-        for uri, likes, reposts, mult, followers, created_at in rows
+        (
+            uri,
+            calculate_hn_score(
+                likes,
+                reposts,
+                effective_authority_multiplier(mult, followers, keyword_matched),
+                created_at,
+                gravity,
+            ),
+        )
+        for uri, likes, reposts, mult, followers, keyword_matched, created_at in rows
     ]
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
@@ -115,12 +133,18 @@ async def _get_ranked_skeleton_with_meta(
     scored = [
         (
             uri,
-            calculate_hn_score(likes, reposts, effective_authority_multiplier(mult, followers), created_at, gravity),
-            effective_authority_multiplier(mult, followers),
+            calculate_hn_score(
+                likes,
+                reposts,
+                effective_authority_multiplier(mult, followers, keyword_matched),
+                created_at,
+                gravity,
+            ),
+            effective_authority_multiplier(mult, followers, keyword_matched),
             followers,
             created_at,
         )
-        for uri, likes, reposts, mult, followers, created_at in rows
+        for uri, likes, reposts, mult, followers, keyword_matched, created_at in rows
     ]
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at TEXT NOT NULL,
     likes_count INTEGER NOT NULL DEFAULT 0,
     reposts_count INTEGER NOT NULL DEFAULT 0,
+    keyword_matched INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (author_did) REFERENCES users(did)
 );
 
@@ -49,14 +50,27 @@ async def init_db(db_path: Path | None = None) -> None:
         if "followers_count" not in cols:
             await conn.execute("ALTER TABLE users ADD COLUMN followers_count INTEGER")
             await conn.commit()
+        # Migration: add keyword_matched to posts (authority posts included without keywords get 0)
+        cursor = await conn.execute("PRAGMA table_info(posts)")
+        pcols = [row[1] for row in await cursor.fetchall()]
+        if "keyword_matched" not in pcols:
+            await conn.execute("ALTER TABLE posts ADD COLUMN keyword_matched INTEGER NOT NULL DEFAULT 1")
+            await conn.commit()
     finally:
         await conn.close()
 
 
-async def insert_post(conn: aiosqlite.Connection, uri: str, cid: str, author_did: str, created_at: datetime) -> None:
+async def insert_post(
+    conn: aiosqlite.Connection,
+    uri: str,
+    cid: str,
+    author_did: str,
+    created_at: datetime,
+    keyword_matched: int = 1,
+) -> None:
     await conn.execute(
-        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at) VALUES (?, ?, ?, ?)",
-        (uri, cid, author_did, created_at.isoformat()),
+        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched) VALUES (?, ?, ?, ?, ?)",
+        (uri, cid, author_did, created_at.isoformat(), keyword_matched),
     )
 
 
@@ -109,11 +123,12 @@ async def increment_reposts(conn: aiosqlite.Connection, subject_uri: str) -> Non
 async def get_recent_posts_with_authority(
     conn: aiosqlite.Connection,
     lookback_hours: int,
-) -> list[tuple[str, int, int, float, int | None, str]]:
-    """Returns (uri, likes_count, reposts_count, authority_multiplier, followers_count, created_at) for recent posts."""
+) -> list[tuple[str, int, int, float, int | None, int, str]]:
+    """Returns (uri, likes_count, reposts_count, authority_multiplier, followers_count, keyword_matched, created_at)."""
     cursor = await conn.execute(
         """
-        SELECT p.uri, p.likes_count, p.reposts_count, COALESCE(u.authority_multiplier, 1.0), u.followers_count, p.created_at
+        SELECT p.uri, p.likes_count, p.reposts_count, COALESCE(u.authority_multiplier, 1.0), u.followers_count,
+               COALESCE(p.keyword_matched, 1), p.created_at
         FROM posts p
         LEFT JOIN users u ON p.author_did = u.did
         WHERE datetime(p.created_at) >= datetime('now', ?)
@@ -122,4 +137,4 @@ async def get_recent_posts_with_authority(
         (f"-{lookback_hours} hours",),
     )
     rows = await cursor.fetchall()
-    return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
+    return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]

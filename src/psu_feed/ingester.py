@@ -67,14 +67,14 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     if not path.startswith("app.bsky.feed.post/"):
         return
     text = _text_from_post_record(record)
-    if not is_relevant_post(text):
+    keyword_matched = 1 if is_relevant_post(text) else 0
+    # Authority DIDs: include all posts (keyword_matched=0 when no PSU keywords). Others: only when keywords match.
+    if did not in AUTHORITY_DIDS and not keyword_matched:
         return
     uri = _build_post_uri(did, path)
     created_at = _parse_created_at(record) or datetime.now(timezone.utc)
-    # CID not required for our ranking; we could parse from commit.rev if needed
     cid = commit.get("cid") or ""
-    await insert_post(conn, uri, cid, did, created_at)
-    # User authority: hardcoded DIDs get 2.0; others get match count and maybe 1.5x
+    await insert_post(conn, uri, cid, did, created_at, keyword_matched=keyword_matched)
     if did in AUTHORITY_DIDS:
         await upsert_user_authority(conn, did, HARDCODED_AUTHORITY)
     else:

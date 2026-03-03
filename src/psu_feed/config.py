@@ -43,3 +43,5 @@ if _env_dids:
 GRAVITY = float(os.environ.get("PSU_FEED_GRAVITY", "1.5"))
 POSTS_LOOKBACK_HOURS = int(os.environ.get("PSU_FEED_LOOKBACK_HOURS", "48"))
 FEED_LIMIT = 50
+# Authority posts without PSU keywords get mult *= this (so they rank lower; default 0.25 = 1/4)
+AUTHORITY_OFFTOPIC_PENALTY = float(os.environ.get("PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY", "0.25"))

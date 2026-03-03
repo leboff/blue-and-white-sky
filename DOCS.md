@@ -66,6 +66,7 @@ Loaded from `.env` in the project root (via `python-dotenv`). Main variables:
 | `AUTHORITY_DIDS` | Optional comma-separated DIDs to add to the authority set (on top of `authority_dids.py`). |
 | `PSU_FEED_GRAVITY` | HN gravity (default `1.5`). |
 | `PSU_FEED_LOOKBACK_HOURS` | How many hours of posts to consider when ranking (default `48`). |
+| `PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY` | Multiplier for authority posts that don’t match PSU keywords (default `0.25`; lower = rank lower). |
 
 ---
 
@@ -90,6 +91,7 @@ Loaded from `.env` in the project root (via `python-dotenv`). Main variables:
 | `created_at` | TEXT | ISO datetime. |
 | `likes_count` | INTEGER | Updated from Jetstream `app.bsky.feed.like`. |
 | `reposts_count` | INTEGER | Updated from Jetstream `app.bsky.feed.repost`. |
+| `keyword_matched` | INTEGER | 1 = post matched PSU keywords; 0 = included only because author is authority (ranked lower). |
 
 Indexes: `posts(created_at)`, `posts(author_did)`.
 
@@ -104,20 +106,26 @@ Defined in `filter.py`.
 
 A post is **relevant** if it matches at least one positive pattern and no negative pattern. Used by the ingester and backfill.
 
+**Authority posts without keywords**: Posts from **authority DIDs** (in `authority_dids.py`) are **always included** in the feed, even when they don’t match PSU keywords. Those are stored with `keyword_matched=0` and ranked with a penalty (see below) so they appear but don’t outrank keyword-relevant posts.
+
 ---
 
 ## Authority and follower boost
 
 **Authority**
 
-- **Specified DIDs** (in `authority_dids.py`): Get a fixed **base** `authority_multiplier` of **2.0**.
-- **Others**: Start at 1.0; after **10+** posts that pass the filter in the last month, base is promoted to **1.5** (see `maybe_promote_authority` in db/ingester).
+- **Specified DIDs** (in `authority_dids.py`): Get a fixed **base** `authority_multiplier` of **2.0**. Their posts are always included (with or without PSU keywords).
+- **Others**: Start at 1.0; after **10+** posts that pass the filter in the last month, base is promoted to **1.5** (see `maybe_promote_authority` in db/ingester). Only keyword-matching posts are included.
+
+**Authority off-topic penalty**
+
+- When `keyword_matched=0` (authority post that didn’t match PSU keywords), the effective multiplier is multiplied by **`AUTHORITY_OFFTOPIC_PENALTY`** (default **0.25**), so those posts rank lower but still appear. Tune via env: `PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY` (e.g. `0.5` for a softer penalty).
 
 **Follower boost**
 
 - Stored in `users.followers_count` when we have profile data (e.g. during backfill).
 - `follower_boost(followers_count)` is `1.0` when unknown or 0; otherwise `1 + min(0.5, log10(1 + followers) / 10)` (cap +50%).
-- **Effective multiplier** = base authority × follower boost. So listed DIDs with large followings can go above 2.0 (e.g. 2.0 × 1.5 = 3.0).
+- **Effective multiplier** = base authority × follower boost × (1.0 or off-topic penalty). So listed DIDs with large followings can go above 2.0 for keyword posts; off-topic authority posts are scaled down by the penalty.
 
 ---
 
