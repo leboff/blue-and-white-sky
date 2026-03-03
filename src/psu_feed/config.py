@@ -24,10 +24,10 @@ JETSTREAM_WS_URL = os.environ.get(
 BLUESKY_HANDLE = os.environ.get("BLUESKY_HANDLE", "")
 BLUESKY_APP_PASSWORD = os.environ.get("BLUESKY_APP_PASSWORD", "")
 FEED_SERVICE_DID = os.environ.get("FEED_SERVICE_DID", "did:web:localhost")  # did:web:yourdomain.com in production
-FEED_DISPLAY_NAME = os.environ.get("FEED_DISPLAY_NAME", "Penn State Football")
+FEED_DISPLAY_NAME = os.environ.get("FEED_DISPLAY_NAME", "Blue and White Sky")
 FEED_DESCRIPTION = os.environ.get(
     "FEED_DESCRIPTION",
-    "Penn State football: Nittany Lions, Beaver Stadium, and PSU coverage.",
+    "Penn State football and other PSU coverage.",
 )
 FEED_RKEY = os.environ.get("FEED_RKEY", "psu-football")
 
