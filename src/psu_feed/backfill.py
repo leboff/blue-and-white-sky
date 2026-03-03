@@ -159,6 +159,7 @@ def _backfill_authority(
     keyword_matched_uris: set[str],
     verbose: bool = False,
     skip_filter: bool = False,
+    max_pages_per_author: int = 5,
 ) -> list[tuple[str, str, str, datetime, int | None, int]]:
     """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count, keyword_matched).
     keyword_matched_uris: set of URIs that count as keyword-matched (DB + batch); updated when we add a matched post (for quote inclusion).
@@ -169,8 +170,12 @@ def _backfill_authority(
         cursor = None
         count_this = 0
         total_fetched = 0
+        page = 0
         try:
             while True:
+                if max_pages_per_author and page >= max_pages_per_author:
+                    logger.info("Authority %s: hit max pages (%d), stopping", label, max_pages_per_author)
+                    break
                 import time
                 try:
                     resp = client.app.bsky.feed.get_author_feed(
@@ -190,6 +195,7 @@ def _backfill_authority(
                     if total_fetched == 0 and verbose:
                         logger.info("Authority %s: API returned empty feed", label)
                     break
+                page += 1
                 total_fetched += len(feed)
                 for item in feed:
                     post = getattr(item, "post", item)
@@ -369,6 +375,13 @@ def main() -> None:
         metavar="N",
         help="Max pagination pages per search query (default %d, 100 posts/page). 0 = no limit.",
     )
+    parser.add_argument(
+        "--authority-max-pages",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Max pagination pages per authority account (default 5, 100 posts/page). 0 = no limit.",
+    )
     args = parser.parse_args()
     do_authority = not args.search_only
     do_search = not args.authority_only
@@ -401,6 +414,7 @@ def main() -> None:
             keyword_matched_uris,
             verbose=args.verbose,
             skip_filter=args.authority_no_filter,
+            max_pages_per_author=args.authority_max_pages,
         )
         all_rows.extend(auth_rows)
     if do_search:
