@@ -7,7 +7,10 @@ services:
     volumes:
       - psu_feed_data:/app/data
     restart: unless-stopped
-
+    environment:
+      - BLUESKY_HANDLE=${BLUESKY_HANDLE}
+      - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
+      - FEED_SERVICE_DID=${FEED_SERVICE_DID}
   ingester:
     build: .
     command: python -m psu_feed.ingester
@@ -16,6 +19,10 @@ services:
     restart: unless-stopped
     depends_on:
       - api
+    environment:
+      - BLUESKY_HANDLE=${BLUESKY_HANDLE}
+      - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
+      - FEED_SERVICE_DID=${FEED_SERVICE_DID}
 
 volumes:
   psu_feed_data:
