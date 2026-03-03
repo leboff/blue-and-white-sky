@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 
 from atproto import Client
@@ -20,6 +21,7 @@ from .authority_dids import get_authority_accounts, get_authority_dids
 from .config import BLUESKY_APP_PASSWORD, BLUESKY_HANDLE, DATABASE_PATH
 from .db import (
     get_connection,
+    get_keyword_matched_uris,
     init_db,
     insert_post,
     increment_user_match_count,
@@ -28,6 +30,7 @@ from .db import (
     upsert_user_authority,
 )
 from .filter import is_relevant_post
+from . import settings as settings_module
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,24 +40,81 @@ HARDCODED_AUTHORITY = 2.0
 AUTHORITY_THRESHOLD = 10
 AUTHORITY_MULTIPLIER = 1.5
 
-# Search queries for keyword backfill (run each, dedupe by URI)
-SEARCH_QUERIES = [
-    "Penn State",
-    "Nittany Lions",
-    "PSU football",
-    "Beaver Stadium",
-    "Happy Valley",
-]
+
+def _keyword_to_search_phrase(kw: str) -> str:
+    """Turn a regex keyword into a plain search phrase for the search API."""
+    s = kw
+    s = re.sub(r"\\s\?", " ", s)
+    s = re.sub(r"\\b", "", s)
+    s = re.sub(r"\?$", "", s)  # trailing regex optional
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _get_search_queries() -> list[str]:
+    """Search phrases derived from settings keywords (unique, non-empty, min 2 chars)."""
+    keywords = settings_module.get_keywords()
+    seen: set[str] = set()
+    out: list[str] = []
+    for kw in keywords:
+        phrase = _keyword_to_search_phrase(kw)
+        if len(phrase) >= 2 and phrase not in seen:
+            seen.add(phrase)
+            out.append(phrase)
+    return out if out else ["Penn State", "Nittany Lions", "PSU football"]  # fallback if no keywords
+
+
+def _record_dict(post) -> dict:
+    """Get post record as a dict for consistent access (embed, text, etc.)."""
+    record = getattr(post, "record", None)
+    if record is None:
+        return {}
+    if callable(getattr(record, "get", None)):
+        return record
+    d = {}
+    for k in ("text", "embed", "createdAt", "created_at"):
+        v = getattr(record, k, None)
+        if v is not None:
+            d[k] = v
+    return d
 
 
 def _text_from_post(post) -> str:
     # PostView can have .text at top level or inside .record
     text = getattr(post, "text", None)
     if not text:
-        record = getattr(post, "record", None)
-        if record is not None:
-            text = getattr(record, "text", None) or (record.get("text") if callable(getattr(record, "get", None)) else None)
+        record = _record_dict(post)
+        text = record.get("text")
     return (text or "").strip()
+
+
+def _get_embed_record_uri(embed) -> str | None:
+    """Extract quoted record URI from an embed (dict or object)."""
+    if embed is None:
+        return None
+    rec = embed.get("record") if isinstance(embed, dict) else getattr(embed, "record", None)
+    if rec is None:
+        return None
+    uri = rec.get("uri") if isinstance(rec, dict) else getattr(rec, "uri", None)
+    if uri:
+        return (uri.strip() or None)
+    inner = rec.get("record") if isinstance(rec, dict) else getattr(rec, "record", None)
+    if isinstance(inner, dict) and inner.get("uri"):
+        return (inner.get("uri") or "").strip() or None
+    if inner is not None:
+        u = getattr(inner, "uri", None)
+        if u:
+            return (u.strip() or None)
+    return None
+
+
+def _quoted_post_uri_from_post(post) -> str | None:
+    """Extract quoted post URI from a PostView (quote repost embed). Returns None if not a quote."""
+    record = _record_dict(post)
+    embed = record.get("embed")
+    if embed is None:
+        embed = getattr(getattr(post, "record", None), "embed", None)
+    return _get_embed_record_uri(embed)
 
 
 def _created_at_from_post(post) -> datetime | None:
@@ -95,9 +155,14 @@ def _followers_from_author(author) -> int | None:
 
 
 def _backfill_authority(
-    client: Client, verbose: bool = False, skip_filter: bool = False
+    client: Client,
+    keyword_matched_uris: set[str],
+    verbose: bool = False,
+    skip_filter: bool = False,
 ) -> list[tuple[str, str, str, datetime, int | None, int]]:
-    """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count, keyword_matched)."""
+    """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count, keyword_matched).
+    keyword_matched_uris: set of URIs that count as keyword-matched (DB + batch); updated when we add a matched post (for quote inclusion).
+    """
     all_rows: list[tuple[str, str, str, datetime, int | None, int]] = []
     seen_uris: set[str] = set()
     for did, label in get_authority_accounts():
@@ -122,6 +187,10 @@ def _backfill_authority(
                         continue
                     text = _text_from_post(post)
                     keyword_matched = 1 if is_relevant_post(text) else 0
+                    if not keyword_matched:
+                        quoted_uri = _quoted_post_uri_from_post(post)
+                        if quoted_uri and quoted_uri in keyword_matched_uris:
+                            keyword_matched = 1
                     if not skip_filter and not keyword_matched:
                         if verbose:
                             logger.debug("Authority %s: skipped (filter) %.80r", label, (text or "")[:80])
@@ -132,6 +201,8 @@ def _backfill_authority(
                             logger.debug("Authority %s: skipped (no created_at) %s", label, uri[:60])
                         continue
                     seen_uris.add(uri)
+                    if keyword_matched:
+                        keyword_matched_uris.add(uri)
                     cid = getattr(post, "cid", "") or ""
                     author = getattr(post, "author", None)
                     author_did = author.did if author else did
@@ -153,15 +224,18 @@ DEFAULT_SEARCH_MAX_PAGES = 100
 
 def _backfill_search(
     client: Client,
+    keyword_matched_uris: set[str],
     since: str | None,
     until: str | None,
     verbose: bool = False,
     max_pages_per_query: int = DEFAULT_SEARCH_MAX_PAGES,
 ) -> list[tuple[str, str, str, datetime, int | None, int]]:
-    """Search by keywords; return (uri, cid, author_did, created_at, followers_count, keyword_matched). Search only returns keyword-matched posts (keyword_matched=1)."""
+    """Search by keywords; return (uri, cid, author_did, created_at, followers_count, keyword_matched).
+    Includes posts that match keywords or that quote a post in keyword_matched_uris.
+    """
     seen: set[str] = set()
     to_insert: list[tuple[str, str, str, datetime, int | None, int]] = []
-    for q in SEARCH_QUERIES:
+    for q in _get_search_queries():
         cursor = None
         total_posts_this_query = 0
         matched_this_query = 0
@@ -186,7 +260,12 @@ def _backfill_search(
                     if not uri or uri in seen:
                         continue
                     text = _text_from_post(post)
-                    if not is_relevant_post(text):
+                    keyword_matched = 1 if is_relevant_post(text) else 0
+                    if not keyword_matched:
+                        quoted_uri = _quoted_post_uri_from_post(post)
+                        if quoted_uri and quoted_uri in keyword_matched_uris:
+                            keyword_matched = 1
+                    if not keyword_matched:
                         continue
                     author = getattr(post, "author", None)
                     author_did = getattr(author, "did", "") if author else ""
@@ -200,6 +279,7 @@ def _backfill_search(
                             logger.debug("Search %r: skipped (no created_at) %s", q, uri[:60])
                         continue
                     seen.add(uri)
+                    keyword_matched_uris.add(uri)
                     cid = getattr(post, "cid", "") or ""
                     followers = _followers_from_author(author)
                     to_insert.append((uri, cid, author_did, created, followers, 1))
@@ -279,23 +359,37 @@ def main() -> None:
         logger.error("Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD")
         raise SystemExit(1)
 
-    asyncio.run(init_db())
+    async def _load_db_and_keyword_uris():
+        await init_db()
+        conn = await get_connection()
+        try:
+            return await get_keyword_matched_uris(conn)
+        finally:
+            await conn.close()
+
+    keyword_matched_uris = asyncio.run(_load_db_and_keyword_uris())
+    logger.info("Loaded %d existing keyword-matched URIs from DB (for quote-repost inclusion)", len(keyword_matched_uris))
+
     client = Client()
     client.login(BLUESKY_HANDLE, BLUESKY_APP_PASSWORD)
 
     all_rows: list[tuple[str, str, str, datetime, int | None, int]] = []
     if do_authority and get_authority_accounts():
         auth_rows = _backfill_authority(
-            client, verbose=args.verbose, skip_filter=args.authority_no_filter
+            client,
+            keyword_matched_uris,
+            verbose=args.verbose,
+            skip_filter=args.authority_no_filter,
         )
         all_rows.extend(auth_rows)
     if do_search:
         search_rows = _backfill_search(
             client,
+            keyword_matched_uris,
             args.since,
             args.until,
             verbose=args.verbose,
-            max_pages_per_query=args.search_max_pages if args.search_max_pages else None,
+            max_pages_per_query=args.search_max_pages,
         )
         # Dedupe by URI (authority might also appear in search)
         seen_uris = {r[0] for r in all_rows}

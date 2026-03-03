@@ -18,6 +18,7 @@ from .db import (
     increment_reposts,
     insert_post,
     maybe_promote_authority,
+    post_has_keyword_match,
     upsert_user_authority,
     increment_user_match_count,
 )
@@ -59,6 +60,23 @@ def _text_from_post_record(record: dict) -> str:
     return (record.get("text") or "").strip()
 
 
+def _quoted_post_uri_from_record(record: dict) -> str | None:
+    """Extract the quoted post URI from a post record (quote repost embed). Returns None if not a quote."""
+    embed = record.get("embed")
+    if not isinstance(embed, dict):
+        return None
+    # app.bsky.embed.record: { "record": { "uri": "at://...", "cid": "..." } }
+    rec = embed.get("record")
+    if isinstance(rec, dict) and rec.get("uri"):
+        return (rec.get("uri") or "").strip() or None
+    # app.bsky.embed.recordWithMedia: { "record": { "record": { "uri": "...", "cid": "..." } }, "media": ... }
+    if isinstance(rec, dict):
+        inner = rec.get("record")
+        if isinstance(inner, dict) and inner.get("uri"):
+            return (inner.get("uri") or "").strip() or None
+    return None
+
+
 def _build_post_uri(did: str, path: str) -> str:
     """Build at:// URI from DID and path (e.g. app.bsky.feed.post/3jz...)."""
     return f"at://{did}/{path}"
@@ -77,7 +95,12 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
             return
     text = _text_from_post_record(record)
     keyword_matched = 1 if is_relevant_post(text) else 0
-    # Authority DIDs: include all posts (keyword_matched=0 when no PSU keywords). Others: only when keywords match.
+    # Include quote reposts when the quoted post is in our DB with keyword_matched=1
+    if not keyword_matched:
+        quoted_uri = _quoted_post_uri_from_record(record)
+        if quoted_uri and await post_has_keyword_match(conn, quoted_uri):
+            keyword_matched = 1
+    # Authority DIDs: include all posts (keyword_matched=0 when no PSU keywords). Others: only when keywords match (or quote of match).
     authority_dids = get_authority_dids()
     if did not in authority_dids and not keyword_matched:
         logger.debug("skipped post did=%s (not authority, no keyword match) text=%.80r", did[:20], (text or "")[:80])

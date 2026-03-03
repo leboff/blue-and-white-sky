@@ -120,6 +120,23 @@ async def increment_reposts(conn: aiosqlite.Connection, subject_uri: str) -> Non
     )
 
 
+async def post_has_keyword_match(conn: aiosqlite.Connection, uri: str) -> bool:
+    """True if the post exists in the DB and had keyword_matched=1 (used for quote-repost inclusion)."""
+    cursor = await conn.execute(
+        "SELECT 1 FROM posts WHERE uri = ? AND keyword_matched = 1",
+        (uri,),
+    )
+    row = await cursor.fetchone()
+    return row is not None
+
+
+async def get_keyword_matched_uris(conn: aiosqlite.Connection) -> set[str]:
+    """Return set of post URIs that have keyword_matched=1 (for backfill quote-repost inclusion)."""
+    cursor = await conn.execute("SELECT uri FROM posts WHERE keyword_matched = 1")
+    rows = await cursor.fetchall()
+    return {r[0] for r in rows}
+
+
 async def delete_post(conn: aiosqlite.Connection, uri: str) -> bool:
     """Delete a post by URI. Returns True if a row was deleted."""
     cursor = await conn.execute("DELETE FROM posts WHERE uri = ?", (uri,))
