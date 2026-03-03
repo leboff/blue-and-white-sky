@@ -171,9 +171,20 @@ def _backfill_authority(
         total_fetched = 0
         try:
             while True:
-                resp = client.app.bsky.feed.get_author_feed(
-                    AuthorFeedParams(actor=did, limit=100, cursor=cursor, filter="posts_no_replies")
-                )
+                import time
+                try:
+                    resp = client.app.bsky.feed.get_author_feed(
+                        AuthorFeedParams(actor=did, limit=100, cursor=cursor, filter="posts_no_replies")
+                    )
+                except Exception as e:
+                    if "429" in str(e) or "Too Many Requests" in str(e) or "ratelimit" in str(e).lower():
+                        logger.warning("Rate limit hit on author feed %s, sleeping for 60s...", label)
+                        time.sleep(60)
+                        # Recreate client to ensure clean state after rate limit
+                        client = Client()
+                        client.login(BLUESKY_HANDLE, BLUESKY_APP_PASSWORD)
+                        continue
+                    raise
                 feed = getattr(resp, "feed", []) or []
                 if not feed:
                     if total_fetched == 0 and verbose:
@@ -219,8 +230,7 @@ def _backfill_authority(
 
 
 # Max search pages per query (100 posts per page). Stops search from running forever.
-DEFAULT_SEARCH_MAX_PAGES = 20
-
+DEFAULT_SEARCH_MAX_PAGES = 5
 
 def _backfill_search(
     client: Client,
@@ -245,9 +255,20 @@ def _backfill_search(
                 if max_pages_per_query and page >= max_pages_per_query:
                     logger.info("Search %r: hit max pages (%d), stopping", q, max_pages_per_query)
                     break
-                resp = client.app.bsky.feed.search_posts(
-                    SearchPostsParams(q=q, limit=100, cursor=cursor, since=since, until=until)
-                )
+                import time
+                try:
+                    resp = client.app.bsky.feed.search_posts(
+                        SearchPostsParams(q=q, limit=100, cursor=cursor, since=since, until=until)
+                    )
+                except Exception as e:
+                    if "429" in str(e) or "Too Many Requests" in str(e) or "ratelimit" in str(e).lower():
+                        logger.warning("Rate limit hit on search for %r, sleeping for 60s...", q)
+                        time.sleep(60)
+                        # Recreate client to ensure clean state after rate limit
+                        client = Client()
+                        client.login(BLUESKY_HANDLE, BLUESKY_APP_PASSWORD)
+                        continue
+                    raise
                 posts = getattr(resp, "posts", []) or []
                 if not posts:
                     if total_posts_this_query == 0 and verbose:
