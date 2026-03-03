@@ -64,6 +64,7 @@ PSU_NEGATIVE_KEYWORDS = [
     r"Portland\s?State",
     r"Plymouth\s?State",
     r"PC\s?Build",
+    r"Canada",
 ]
 
 # Compile patterns once for efficiency

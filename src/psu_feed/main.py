@@ -17,7 +17,7 @@ from .config import (
     POSTS_LOOKBACK_HOURS,
 )
 from .db import get_connection, get_recent_posts_with_authority
-from .ranking import calculate_hn_score
+from .ranking import calculate_hn_score, effective_authority_multiplier
 
 app = FastAPI(title="Penn State Football Feed")
 
@@ -62,8 +62,8 @@ async def get_feed_skeleton(
         await conn.close()
 
     scored = [
-        (uri, calculate_hn_score(likes, reposts, mult, created_at, GRAVITY))
-        for uri, likes, reposts, mult, created_at in rows
+        (uri, calculate_hn_score(likes, reposts, effective_authority_multiplier(mult, followers), created_at, GRAVITY))
+        for uri, likes, reposts, mult, followers, created_at in rows
     ]
     scored.sort(key=lambda x: -x[1])
     top = scored[:limit]
@@ -94,8 +94,8 @@ async def _get_ranked_skeleton(
     finally:
         await conn.close()
     scored = [
-        (uri, calculate_hn_score(likes, reposts, mult, created_at, gravity))
-        for uri, likes, reposts, mult, created_at in rows
+        (uri, calculate_hn_score(likes, reposts, effective_authority_multiplier(mult, followers), created_at, gravity))
+        for uri, likes, reposts, mult, followers, created_at in rows
     ]
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
@@ -105,16 +105,22 @@ async def _get_ranked_skeleton_with_meta(
     limit: int,
     lookback_hours: int,
     gravity: float,
-) -> list[tuple[str, float, float, str]]:
-    """Return [(uri, score, authority_multiplier, created_at), ...] for the top ranked posts (for dev view)."""
+) -> list[tuple[str, float, float, int | None, str]]:
+    """Return [(uri, score, effective_authority_multiplier, followers_count, created_at), ...] for dev view."""
     conn = await get_connection()
     try:
         rows = await get_recent_posts_with_authority(conn, lookback_hours)
     finally:
         await conn.close()
     scored = [
-        (uri, calculate_hn_score(likes, reposts, mult, created_at, gravity), mult, created_at)
-        for uri, likes, reposts, mult, created_at in rows
+        (
+            uri,
+            calculate_hn_score(likes, reposts, effective_authority_multiplier(mult, followers), created_at, gravity),
+            effective_authority_multiplier(mult, followers),
+            followers,
+            created_at,
+        )
+        for uri, likes, reposts, mult, followers, created_at in rows
     ]
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
@@ -158,7 +164,7 @@ async def dev_feed(
         hydrated = await _hydrate_posts(uris)
         # Compute live score (Bluesky API engagement) for each so order and displayed score are correct
         with_scores = []
-        for uri, _db_score, mult, created_at in ranked:
+        for uri, _db_score, mult, followers, created_at in ranked:
             post = hydrated.get(uri) or {}
             author = post.get("author") or {}
             handle = author.get("handle") or "?"

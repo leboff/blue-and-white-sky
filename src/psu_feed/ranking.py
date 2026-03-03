@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
+
+# Max boost from followers (e.g. 1.5 = up to 50% boost). Tuned so 10k followers ~ 1.2x, 100k ~ 1.4x.
+FOLLOWER_BOOST_MAX = 0.5
+
+
+def follower_boost(followers_count: int | None) -> float:
+    """Multiplier from follower count: 1.0 when unknown/0, up to 1 + FOLLOWER_BOOST_MAX for large accounts."""
+    if followers_count is None or followers_count <= 0:
+        return 1.0
+    # log10(1 + n): 1k -> ~3, 10k -> ~4, 100k -> ~5. Scale so 100k hits cap.
+    log = math.log10(1 + followers_count)
+    return 1.0 + min(FOLLOWER_BOOST_MAX, log / 10.0)
+
+
+def effective_authority_multiplier(base_mult: float, followers_count: int | None) -> float:
+    """Authority multiplier = specified-DID/match-count base, then boosted by followers."""
+    return base_mult * follower_boost(followers_count)
 
 
 def calculate_hn_score(

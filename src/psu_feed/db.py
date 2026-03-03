@@ -12,7 +12,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     did TEXT PRIMARY KEY,
     match_count INTEGER NOT NULL DEFAULT 0,
-    authority_multiplier REAL NOT NULL DEFAULT 1.0
+    authority_multiplier REAL NOT NULL DEFAULT 1.0,
+    followers_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -42,6 +43,12 @@ async def init_db(db_path: Path | None = None) -> None:
     try:
         await conn.executescript(SCHEMA)
         await conn.commit()
+        # Migration: add followers_count to existing DBs (new installs already have it from SCHEMA)
+        cursor = await conn.execute("PRAGMA table_info(users)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "followers_count" not in cols:
+            await conn.execute("ALTER TABLE users ADD COLUMN followers_count INTEGER")
+            await conn.commit()
     finally:
         await conn.close()
 
@@ -69,6 +76,15 @@ async def increment_user_match_count(conn: aiosqlite.Connection, did: str) -> No
     )
 
 
+async def update_user_followers(conn: aiosqlite.Connection, did: str, followers_count: int) -> None:
+    """Set or update follower count for a user (from profile when available)."""
+    await conn.execute(
+        "INSERT INTO users (did, match_count, authority_multiplier, followers_count) VALUES (?, 0, 1.0, ?) "
+        "ON CONFLICT(did) DO UPDATE SET followers_count = excluded.followers_count",
+        (did, followers_count),
+    )
+
+
 async def maybe_promote_authority(conn: aiosqlite.Connection, did: str, threshold: int = 10, multiplier: float = 1.5) -> None:
     await conn.execute(
         "UPDATE users SET authority_multiplier = ? WHERE did = ? AND match_count >= ? AND authority_multiplier < ?",
@@ -93,11 +109,11 @@ async def increment_reposts(conn: aiosqlite.Connection, subject_uri: str) -> Non
 async def get_recent_posts_with_authority(
     conn: aiosqlite.Connection,
     lookback_hours: int,
-) -> list[tuple[str, int, int, float, str]]:
-    """Returns (uri, likes_count, reposts_count, authority_multiplier, created_at) for recent posts."""
+) -> list[tuple[str, int, int, float, int | None, str]]:
+    """Returns (uri, likes_count, reposts_count, authority_multiplier, followers_count, created_at) for recent posts."""
     cursor = await conn.execute(
         """
-        SELECT p.uri, p.likes_count, p.reposts_count, COALESCE(u.authority_multiplier, 1.0), p.created_at
+        SELECT p.uri, p.likes_count, p.reposts_count, COALESCE(u.authority_multiplier, 1.0), u.followers_count, p.created_at
         FROM posts p
         LEFT JOIN users u ON p.author_did = u.did
         WHERE datetime(p.created_at) >= datetime('now', ?)
@@ -106,4 +122,4 @@ async def get_recent_posts_with_authority(
         (f"-{lookback_hours} hours",),
     )
     rows = await cursor.fetchall()
-    return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+    return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]

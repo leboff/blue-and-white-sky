@@ -24,6 +24,7 @@ from .db import (
     insert_post,
     increment_user_match_count,
     maybe_promote_authority,
+    update_user_followers,
     upsert_user_authority,
 )
 from .filter import is_relevant_post
@@ -79,11 +80,25 @@ def _created_at_from_post(post) -> datetime | None:
         return None
 
 
+def _followers_from_author(author) -> int | None:
+    """Get follower count from author (ProfileViewBasic) when available."""
+    if author is None:
+        return None
+    n = getattr(author, "followers_count", None) or getattr(author, "followersCount", None)
+    if n is not None and isinstance(n, int) and n >= 0:
+        return n
+    if callable(getattr(author, "get", None)):
+        n = author.get("followersCount") or author.get("followers_count")
+        if n is not None and isinstance(n, int) and n >= 0:
+            return n
+    return None
+
+
 def _backfill_authority(
     client: Client, verbose: bool = False, skip_filter: bool = False
-) -> list[tuple[str, str, str, datetime]]:
-    """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at) for matching posts."""
-    all_rows: list[tuple[str, str, str, datetime]] = []
+) -> list[tuple[str, str, str, datetime, int | None]]:
+    """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count)."""
+    all_rows: list[tuple[str, str, str, datetime, int | None]] = []
     seen_uris: set[str] = set()
     for did, label in AUTHORITY_ACCOUNTS:
         cursor = None
@@ -120,7 +135,8 @@ def _backfill_authority(
                     cid = getattr(post, "cid", "") or ""
                     author = getattr(post, "author", None)
                     author_did = author.did if author else did
-                    all_rows.append((uri, cid, author_did, created))
+                    followers = _followers_from_author(author)
+                    all_rows.append((uri, cid, author_did, created, followers))
                     count_this += 1
                 cursor = getattr(resp, "cursor", None)
                 if not cursor:
@@ -141,10 +157,10 @@ def _backfill_search(
     until: str | None,
     verbose: bool = False,
     max_pages_per_query: int = DEFAULT_SEARCH_MAX_PAGES,
-) -> list[tuple[str, str, str, datetime]]:
-    """Search by keywords; return (uri, cid, author_did, created_at) for matching posts, deduped by URI."""
+) -> list[tuple[str, str, str, datetime, int | None]]:
+    """Search by keywords; return (uri, cid, author_did, created_at, followers_count) for matching posts, deduped by URI."""
     seen: set[str] = set()
-    to_insert: list[tuple[str, str, str, datetime]] = []
+    to_insert: list[tuple[str, str, str, datetime, int | None]] = []
     for q in SEARCH_QUERIES:
         cursor = None
         total_posts_this_query = 0
@@ -185,7 +201,8 @@ def _backfill_search(
                         continue
                     seen.add(uri)
                     cid = getattr(post, "cid", "") or ""
-                    to_insert.append((uri, cid, author_did, created))
+                    followers = _followers_from_author(author)
+                    to_insert.append((uri, cid, author_did, created, followers))
                     matched_this_query += 1
                 cursor = getattr(resp, "cursor", None)
                 if not cursor:
@@ -203,18 +220,20 @@ def _backfill_search(
 
 
 async def _write_batch(
-    rows: list[tuple[str, str, str, datetime]],
+    rows: list[tuple[str, str, str, datetime, int | None]],
     authority_dids: set[str],
 ) -> None:
     conn = await get_connection()
     try:
-        for uri, cid, author_did, created_at in rows:
+        for uri, cid, author_did, created_at, followers_count in rows:
             await insert_post(conn, uri, cid, author_did, created_at)
             if author_did in authority_dids:
                 await upsert_user_authority(conn, author_did, HARDCODED_AUTHORITY)
             else:
                 await increment_user_match_count(conn, author_did)
                 await maybe_promote_authority(conn, author_did, AUTHORITY_THRESHOLD, AUTHORITY_MULTIPLIER)
+            if followers_count is not None:
+                await update_user_followers(conn, author_did, followers_count)
         await conn.commit()
     finally:
         await conn.close()
@@ -264,7 +283,7 @@ def main() -> None:
     client = Client()
     client.login(BLUESKY_HANDLE, BLUESKY_APP_PASSWORD)
 
-    all_rows: list[tuple[str, str, str, datetime]] = []
+    all_rows: list[tuple[str, str, str, datetime, int | None]] = []
     if do_authority and AUTHORITY_ACCOUNTS:
         auth_rows = _backfill_authority(
             client, verbose=args.verbose, skip_filter=args.authority_no_filter
