@@ -17,7 +17,7 @@ from .config import (
     GRAVITY,
     POSTS_LOOKBACK_HOURS,
 )
-from .db import get_connection, get_recent_posts_with_authority
+from .db import delete_post, get_connection, get_recent_posts_with_authority
 from .ranking import calculate_hn_score, effective_authority_multiplier
 
 app = FastAPI(title="Penn State Football Feed")
@@ -204,9 +204,10 @@ async def dev_feed(
         with_scores.sort(key=lambda x: -x[0])
         rows = []
         for i, (score, uri, handle, display_name, text, like_count, repost_count, created) in enumerate(with_scores, 1):
+            uri_escaped = html.escape(uri, quote=True)
             rows.append(
                 f"""
-                <tr>
+                <tr data-uri="{uri_escaped}">
                     <td>{i}</td>
                     <td><strong>{html.escape(display_name)}</strong> @{html.escape(handle)}</td>
                     <td>{html.escape(text[:200])}{"…" if len(text) > 200 else ""}</td>
@@ -214,6 +215,7 @@ async def dev_feed(
                     <td>{score:.4f}</td>
                     <td>{html.escape(created[:19]) if created else ""}</td>
                     <td><a href="https://bsky.app/profile/{handle}/post/{uri.split('/')[-1]}" target="_blank">Open</a></td>
+                    <td><button type="button" class="dev-feed-delete" data-uri="{uri_escaped}">Delete</button></td>
                 </tr>
                 """
             )
@@ -225,12 +227,29 @@ async def dev_feed(
         <a href="?limit={limit}&gravity={g}&lookback_hours=72">72h</a></p>
         <table border="1" cellpadding="8" style="border-collapse: collapse; width:100%;">
             <thead><tr>
-                <th>#</th><th>Author</th><th>Text</th><th>Likes / Reposts</th><th>Score</th><th>Created</th><th>Link</th>
+                <th>#</th><th>Author</th><th>Text</th><th>Likes / Reposts</th><th>Score</th><th>Created</th><th>Link</th><th></th>
             </tr></thead>
             <tbody>
                 {"".join(rows)}
             </tbody>
         </table>
+        <script>
+        document.querySelectorAll('.dev-feed-delete').forEach(function(btn) {{
+            btn.addEventListener('click', function() {{
+                var uri = this.getAttribute('data-uri');
+                if (!uri || !confirm('Delete this post from the DB?')) return;
+                var row = this.closest('tr');
+                fetch('/dev/feed/delete-post', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ uri: uri }})
+                }}).then(function(r) {{
+                    if (r.ok) row.remove();
+                    else r.text().then(function(t) {{ alert('Delete failed: ' + t); }});
+                }}).catch(function(e) {{ alert('Delete failed: ' + e); }});
+            }});
+        }});
+        </script>
         """
     full = f"""
     <!DOCTYPE html>
@@ -241,6 +260,22 @@ async def dev_feed(
     </body></html>
     """
     return HTMLResponse(full)
+
+
+@app.post("/dev/feed/delete-post")
+async def dev_feed_delete_post(body: dict = Body(...)):
+    """Delete a post from the DB by URI (for dev feed cleanup)."""
+    uri = body.get("uri")
+    if not uri or not isinstance(uri, str):
+        raise HTTPException(400, "body must include uri (string)")
+    conn = await get_connection()
+    try:
+        deleted = await delete_post(conn, uri.strip())
+    finally:
+        await conn.close()
+    if not deleted:
+        raise HTTPException(404, "post not found")
+    return {"ok": True}
 
 
 # --- Admin UI (keywords & authorities) ---

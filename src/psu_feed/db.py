@@ -120,6 +120,13 @@ async def increment_reposts(conn: aiosqlite.Connection, subject_uri: str) -> Non
     )
 
 
+async def delete_post(conn: aiosqlite.Connection, uri: str) -> bool:
+    """Delete a post by URI. Returns True if a row was deleted."""
+    cursor = await conn.execute("DELETE FROM posts WHERE uri = ?", (uri,))
+    await conn.commit()
+    return cursor.rowcount > 0
+
+
 async def get_recent_posts_with_authority(
     conn: aiosqlite.Connection,
     lookback_hours: int,

@@ -66,14 +66,21 @@ def _build_post_uri(did: str, path: str) -> str:
 
 async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) -> None:
     record = commit.get("record") or {}
+    # Jetstream sends "path" (full path) or "collection" + "rkey"; build path if needed
     path = commit.get("path") or ""
     if not path.startswith("app.bsky.feed.post/"):
-        return
+        coll = commit.get("collection") or ""
+        rkey = commit.get("rkey") or ""
+        if coll == "app.bsky.feed.post" and rkey:
+            path = f"{coll}/{rkey}"
+        else:
+            return
     text = _text_from_post_record(record)
     keyword_matched = 1 if is_relevant_post(text) else 0
     # Authority DIDs: include all posts (keyword_matched=0 when no PSU keywords). Others: only when keywords match.
     authority_dids = get_authority_dids()
     if did not in authority_dids and not keyword_matched:
+        logger.debug("skipped post did=%s (not authority, no keyword match) text=%.80r", did[:20], (text or "")[:80])
         return
     uri = _build_post_uri(did, path)
     created_at = _parse_created_at(record) or datetime.now(timezone.utc)
@@ -127,7 +134,8 @@ async def _process_message(conn: SQLiteConnection, raw: str) -> None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return
-    if data.get("kind") != "commit":
+    # Accept messages with kind=="commit" or any message that has commit+did (some streams omit "kind")
+    if data.get("kind") != "commit" and not (data.get("commit") and data.get("did")):
         return
     commit = data.get("commit") or {}
     did = data.get("did") or ""
@@ -151,7 +159,16 @@ async def run_ingester() -> None:
         full_url = f"{url}&{params}"
     else:
         full_url = f"{url}?{params}"
-    logger.info("connecting to %s", full_url.split("?")[0])
+    authority_count = len(get_authority_dids())
+    keyword_count = len(settings_module.get_keywords())
+    logger.info(
+        "ingester starting: %d authority DIDs, %d keywords (connect to %s)",
+        authority_count,
+        keyword_count,
+        full_url.split("?")[0],
+    )
+    if authority_count == 0 and keyword_count == 0:
+        logger.warning("no authorities and no keywords loaded — no posts will be indexed until settings are configured")
     while True:
         try:
             settings_module.reload_if_changed()
