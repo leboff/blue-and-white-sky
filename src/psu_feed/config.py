@@ -26,10 +26,13 @@ FEED_DESCRIPTION = os.environ.get(
 )
 FEED_RKEY = os.environ.get("FEED_RKEY", "psu-football")
 
-# Authority: DIDs that get a fixed 2.0 multiplier (beat reporters / official accounts)
-AUTHORITY_DIDS: set[str] = set(
-    os.environ.get("AUTHORITY_DIDS", "").split(",") if os.environ.get("AUTHORITY_DIDS") else []
-)
+# Authority: DIDs with 2.0x multiplier (edit authority_dids.py for labeled list)
+from .authority_dids import AUTHORITY_DIDS as _AUTHORITY_DIDS  # noqa: E402
+AUTHORITY_DIDS: set[str] = set(_AUTHORITY_DIDS)
+# Optional: add more DIDs via env (comma-separated) without editing the file
+_env_dids = os.environ.get("AUTHORITY_DIDS", "").strip()
+if _env_dids:
+    AUTHORITY_DIDS |= {d.strip() for d in _env_dids.split(",") if d.strip()}
 
 # HN ranking
 GRAVITY = float(os.environ.get("PSU_FEED_GRAVITY", "1.5"))
