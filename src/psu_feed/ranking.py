@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
-from .config import AUTHORITY_OFFTOPIC_PENALTY
+from .config import AUTHORITY_OFFTOPIC_PENALTY, FRESH_POST_SCORE_FLOOR
 
 def serendipity_boost(age_hours: float) -> float:
     """Give a 2x artificial point boost that decays to 1x over the first 2 hours."""
@@ -56,12 +56,10 @@ def calculate_hn_score(
     gravity: float = 1.5,
 ) -> float:
     """
-    Score = (P - 1) / (T + 2)^G
-    P = (likes + reposts * 1.5 + replies * 0.5) * authority_multiplier * media_boost * serendipity_boost, minus 1.
-    T = age in hours.
+    Score = max(FLOOR, P - 1) / (T + 2)^G
+    P = (likes + reposts * 1.5 + replies * 0.5) * authority_multiplier * media_boost * serendipity_boost.
+    T = age in hours. FLOOR ensures new posts with no engagement still get a positive score so they appear; they decay with age.
     """
-    points = (likes + reposts) * multiplier
-    adjusted_points = max(0.0, points - 1.0)
     if isinstance(created_at, str):
         try:
             if created_at.endswith("Z"):
@@ -81,8 +79,8 @@ def calculate_hn_score(
     # Reposts are highly visible, replies show engagement but can be noise
     engagement = (likes * 1.0) + (reposts * 1.5) + (replies * 0.5)
     points = engagement * multiplier * media_boost * s_boost
-    
-    adjusted_points = max(0.0, points - 1.0)
+    # Floor so new posts with no engagement still appear; they decay with age
+    adjusted_points = max(FRESH_POST_SCORE_FLOOR, points - 1.0)
     
     dynamic_grav = get_dynamic_gravity(gravity)
     denominator = (age_hours + 2.0) ** dynamic_grav
