@@ -117,6 +117,19 @@ def _quoted_post_uri_from_post(post) -> str | None:
     return _get_embed_record_uri(embed)
 
 
+def _parse_iso_datetime(s: str | None) -> datetime | None:
+    """Parse ISO datetime string to UTC datetime. Returns None if s is empty or invalid."""
+    if not s or not str(s).strip():
+        return None
+    raw = str(s).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw).astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 def _created_at_from_post(post) -> datetime | None:
     record = getattr(post, "record", None)
     raw = None
@@ -175,13 +188,18 @@ def _has_media_from_post(post) -> int:
 def _backfill_authority(
     client: Client,
     keyword_matched_uris: set[str],
+    since: str | None = None,
+    until: str | None = None,
     verbose: bool = False,
     skip_filter: bool = False,
     max_pages_per_author: int = 5,
 ) -> list[tuple[str, str, str, datetime, int | None, int, int]]:
     """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count, keyword_matched).
     keyword_matched_uris: set of URIs that count as keyword-matched (DB + batch); updated when we add a matched post (for quote inclusion).
+    If since/until are set, only posts with created_at in [since, until] are included (client-side filter). Feed is newest-first, so we stop when we see a post before since.
     """
+    since_dt = _parse_iso_datetime(since)
+    until_dt = _parse_iso_datetime(until)
     all_rows: list[tuple[str, str, str, datetime, int | None, int, int]] = []
     seen_uris: set[str] = set()
     for did, label in get_authority_accounts():
@@ -215,6 +233,7 @@ def _backfill_authority(
                     break
                 page += 1
                 total_fetched += len(feed)
+                break_before_since = False
                 for item in feed:
                     post = getattr(item, "post", item)
                     uri = getattr(post, "uri", None)
@@ -235,6 +254,16 @@ def _backfill_authority(
                         if verbose:
                             logger.debug("Authority %s: skipped (no created_at) %s", label, uri[:60])
                         continue
+                    if since_dt is not None and created < since_dt:
+                        if verbose:
+                            logger.debug("Authority %s: skipped (before --since) %s", label, uri[:60])
+                        # Feed is newest-first; rest of this author's posts are older, so stop paginating
+                        break_before_since = True
+                        break
+                    if until_dt is not None and created > until_dt:
+                        if verbose:
+                            logger.debug("Authority %s: skipped (after --until) %s", label, uri[:60])
+                        continue
                     seen_uris.add(uri)
                     if keyword_matched:
                         keyword_matched_uris.add(uri)
@@ -245,7 +274,10 @@ def _backfill_authority(
                     has_media = _has_media_from_post(post)
                     all_rows.append((uri, cid, author_did, created, followers, keyword_matched, has_media))
                     count_this += 1
-                cursor = getattr(resp, "cursor", None)
+                if break_before_since:
+                    cursor = None
+                else:
+                    cursor = getattr(resp, "cursor", None)
                 if not cursor:
                     break
             logger.info("Authority %s: %d matching posts (fetched %d items)", label, count_this, total_fetched)
@@ -374,13 +406,13 @@ def main() -> None:
         "--since",
         default=None,
         metavar="ISO",
-        help="Search only: posts after this time (e.g. 2025-01-01T00:00:00.000Z)",
+        help="Only include posts after this time (search API; authority uses client-side filter). E.g. 2025-01-01T00:00:00.000Z",
     )
     parser.add_argument(
         "--until",
         default=None,
         metavar="ISO",
-        help="Search only: posts before this time (e.g. 2025-12-31T23:59:59.000Z)",
+        help="Only include posts before this time (search API; authority uses client-side filter). E.g. 2025-12-31T23:59:59.000Z",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Log why posts are skipped (filter, no created_at, etc.)")
     parser.add_argument(
@@ -432,6 +464,8 @@ def main() -> None:
         auth_rows = _backfill_authority(
             client,
             keyword_matched_uris,
+            since=args.since,
+            until=args.until,
             verbose=args.verbose,
             skip_filter=args.authority_no_filter,
             max_pages_per_author=args.authority_max_pages,
