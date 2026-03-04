@@ -11,6 +11,7 @@ services:
       - BLUESKY_HANDLE=${BLUESKY_HANDLE}
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
       - FEED_SERVICE_DID=${FEED_SERVICE_DID}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
   ingester:
     build: .
     command: python -m psu_feed.ingester
@@ -22,7 +23,7 @@ services:
     environment:
       - BLUESKY_HANDLE=${BLUESKY_HANDLE}
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
-      - FEED_SERVICE_DID=${FEED_SERVICE_DID}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
 
 volumes:
   psu_feed_data:
