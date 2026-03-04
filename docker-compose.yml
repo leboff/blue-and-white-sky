@@ -6,8 +6,7 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No ports: — only other containers need Redis; exposing 6379 can conflict with host Redis
     restart: unless-stopped
 
   api:
