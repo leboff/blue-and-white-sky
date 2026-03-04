@@ -1,3 +1,8 @@
+# Env per service:
+#   api: Bluesky (startup check), feed identity, Gemini (dev classify); no Redis.
+#   ingester: Bluesky (startup check), Redis (enqueue); no Gemini.
+#   classifier_worker: Redis (dequeue), Gemini only.
+#   engagement_worker: Redis only.
 services:
   redis:
     image: redis:7-alpine
@@ -20,7 +25,7 @@ services:
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
       - FEED_SERVICE_DID=${FEED_SERVICE_DID}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - REDIS_URL=redis://redis:6379
+
   ingester:
     build: .
     command: python -m psu_feed.ingester
@@ -33,8 +38,8 @@ services:
     environment:
       - BLUESKY_HANDLE=${BLUESKY_HANDLE}
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_URL=redis://redis:6379
+
   classifier_worker:
     build: .
     command: python -m psu_feed.workers.classifier_worker
@@ -46,6 +51,7 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_URL=redis://redis:6379
+
   engagement_worker:
     build: .
     command: python -m psu_feed.workers.engagement_worker
