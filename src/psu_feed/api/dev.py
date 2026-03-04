@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from ..classifier import classify_posts as llm_classify_posts
-from ..config import GRAVITY, POSTS_LOOKBACK_HOURS
+from ..config import POSTS_LOOKBACK_HOURS
 from ..db import (
     delete_post,
     get_recent_posts_with_authority,
@@ -13,9 +13,8 @@ from ..db import (
     update_post_classification,
     update_posts_engagement_bulk,
 )
-from ..ranking import calculate_hn_score
 from ..services.skeleton import (
-    get_ranked_skeleton_with_meta,
+    get_chronological_skeleton_with_meta,
     hydrate_posts,
     llm_status_label,
     quoted_text_from_hydrated_post,
@@ -27,7 +26,6 @@ router = APIRouter()
 @router.get("/dev/feed")
 async def dev_feed(
     limit: int = Query(20, ge=1, le=50),
-    gravity: float = Query(None, description="HN gravity (default from config)"),
     lookback_hours: int = Query(None, description="Lookback hours (default from config)"),
     show_all: bool = Query(True, description="Include pending and rejected posts (default True for dev)"),
 ):
@@ -35,11 +33,10 @@ async def dev_feed(
     Preview the feed with real post content (JSON). Returns list of posts with score, author, text, engagement, status.
     By default includes pending/rejected so you see new posts before the classifier runs.
     """
-    g = gravity if gravity is not None else GRAVITY
     lookback = lookback_hours if lookback_hours is not None else POSTS_LOOKBACK_HOURS
 
     # When showing approved only, refresh engagement from Bluesky so ranking uses current
-    # likes/reposts/replies (not just Jetstream events we've seen). Ensures viral posts rank #1.
+    # likes/reposts/replies (not just Jetstream events we've seen).
     if not show_all:
         async with get_session() as session:
             rows = await get_recent_posts_with_authority(
@@ -63,8 +60,8 @@ async def dev_feed(
                 async with get_session() as session:
                     await update_posts_engagement_bulk(session, updates)
 
-    ranked = await get_ranked_skeleton_with_meta(
-        limit=limit, lookback_hours=lookback, gravity=g, include_pending_rejected=show_all
+    ranked = await get_chronological_skeleton_with_meta(
+        limit=limit, lookback_hours=lookback, include_pending_rejected=show_all
     )
     if not ranked:
         return {
@@ -87,21 +84,14 @@ async def dev_feed(
         like_count = post.get("likeCount") or 0
         repost_count = post.get("repostCount") or 0
         reply_count = post.get("replyCount") or 0
-        embed = record.get("embed")
-        has_media = 0
-        if isinstance(embed, dict):
-            embed_type = embed.get("$type")
-            if embed_type in ("app.bsky.embed.images", "app.bsky.embed.video", "app.bsky.embed.external", "app.bsky.embed.recordWithMedia"):
-                has_media = 1
 
         quoted_text = quoted_text_from_hydrated_post(post)
-        live_score = calculate_hn_score(like_count, repost_count, reply_count, has_media, mult, created_at, g)
         status = llm_status_label(llm_approved)
         link = f"https://bsky.app/profile/{handle}/post/{uri.split('/')[-1]}" if handle else ""
         with_scores.append({
             "uri": uri,
-            "score": round(live_score, 4),
-            "rank_score": round(rank_score, 4),
+            "score": 0.0,
+            "rank_score": 0.0,
             "handle": handle,
             "display_name": display_name,
             "text": text,
@@ -114,7 +104,6 @@ async def dev_feed(
             "link": link,
         })
 
-    # Keep skeleton order (no re-sort by live score). Limit=20 then shows the same top 20 as the real feed.
     return {"posts": with_scores}
 
 

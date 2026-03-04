@@ -5,53 +5,25 @@ from __future__ import annotations
 import httpx
 
 from ..db import get_recent_posts_with_authority, get_session
-from ..ranking import calculate_hn_score, effective_authority_multiplier
 
 BSKY_GET_POSTS_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts"
 GET_POSTS_BATCH = 25
 
 
-async def get_ranked_skeleton(
+async def get_chronological_skeleton(
     limit: int,
     lookback_hours: int,
-    gravity: float,
 ) -> list[tuple[str, float]]:
-    """Return [(uri, score), ...] for the top ranked posts."""
+    """Return [(uri, score), ...] for the newest posts."""
     async with get_session() as session:
         rows = await get_recent_posts_with_authority(session, lookback_hours)
 
-    scored_initial = []
-    for row in rows:
-        base_score = calculate_hn_score(
-            row.likes_count,
-            row.reposts_count,
-            row.replies_count,
-            row.has_media,
-            effective_authority_multiplier(row.authority_multiplier, row.followers_count, row.keyword_matched),
-            row.created_at,
-            gravity,
-        )
-        scored_initial.append((row.uri, base_score, row.author_did))
-
-    scored_initial.sort(key=lambda x: -x[1])
-
-    author_counts: dict[str, int] = {}
-    scored = []
-    for uri, score, author_did in scored_initial:
-        count = author_counts.get(author_did, 0)
-        diversity_penalty = 0.8 ** count
-        final_score = score * diversity_penalty
-        author_counts[author_did] = count + 1
-        scored.append((uri, final_score))
-
-    scored.sort(key=lambda x: -x[1])
-    return scored[:limit]
+    return [(row.uri, 0.0) for row in rows[:limit]]
 
 
-async def get_ranked_skeleton_with_meta(
+async def get_chronological_skeleton_with_meta(
     limit: int,
     lookback_hours: int,
-    gravity: float,
     include_pending_rejected: bool = False,
 ) -> list[tuple[str, float, float, int | None, str, str, int]]:
     """Return [(uri, score, eff_mult, followers, created_at, author_did, llm_approved), ...]. llm_approved: 0=pending, 1=approved, 2=rejected."""
@@ -60,34 +32,10 @@ async def get_ranked_skeleton_with_meta(
             session, lookback_hours, include_pending_rejected=include_pending_rejected
         )
 
-    scored_initial = []
-    for row in rows:
-        base_score = calculate_hn_score(
-            row.likes_count,
-            row.reposts_count,
-            row.replies_count,
-            row.has_media,
-            effective_authority_multiplier(row.authority_multiplier, row.followers_count, row.keyword_matched),
-            row.created_at,
-            gravity,
-        )
-        eff_mult = effective_authority_multiplier(row.authority_multiplier, row.followers_count, row.keyword_matched)
-        scored_initial.append((row.uri, base_score, eff_mult, row.followers_count, row.created_at, row.author_did, row.llm_approved))
-
-    scored_initial.sort(key=lambda x: -x[1])
-
-    author_counts: dict[str, int] = {}
-    scored = []
-    for item in scored_initial:
-        uri, score, eff_mult, followers, created_at, author_did, llm_approved = item
-        count = author_counts.get(author_did, 0)
-        diversity_penalty = 0.8 ** count
-        final_score = score * diversity_penalty
-        author_counts[author_did] = count + 1
-        scored.append((uri, final_score, eff_mult, followers, created_at, author_did, llm_approved))
-
-    scored.sort(key=lambda x: -x[1])
-    return scored[:limit]
+    return [
+        (row.uri, 0.0, 1.0, row.followers_count, row.created_at, row.author_did, row.llm_approved)
+        for row in rows[:limit]
+    ]
 
 
 async def hydrate_posts(uris: list[str]) -> dict[str, dict]:

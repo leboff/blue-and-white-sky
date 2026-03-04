@@ -6,7 +6,6 @@ export default function DevFeed() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState(20)
-  const [gravity, setGravity] = useState<number>(1.5)
   const [lookbackHours, setLookbackHours] = useState<number | null>(null)
   const [showAll, setShowAll] = useState(true)
   const [classifyingUri, setClassifyingUri] = useState<string | null>(null)
@@ -18,7 +17,6 @@ export default function DevFeed() {
     try {
       const res = await getDevFeed({
         limit: limit,
-        gravity,
         lookback_hours: lookbackHours ?? undefined,
         show_all: showAll,
       })
@@ -28,7 +26,7 @@ export default function DevFeed() {
     } finally {
       setLoading(false)
     }
-  }, [limit, gravity, lookbackHours, showAll])
+  }, [limit, lookbackHours, showAll])
 
   useEffect(() => {
     load()
@@ -98,18 +96,6 @@ export default function DevFeed() {
           <option value={20}>20</option>
           <option value={50}>50</option>
         </select>
-        {' '}
-        Gravity:{' '}
-        <input
-          type="range"
-          min={1}
-          max={5}
-          step={0.1}
-          value={gravity}
-          onChange={(e) => setGravity(Number(e.target.value))}
-          style={{ verticalAlign: 'middle', marginRight: '0.5rem' }}
-        />
-        <span style={{ minWidth: '2.5rem', display: 'inline-block' }}>{gravity.toFixed(1)}</span>
         {' '}
         Lookback:{' '}
         <button type="button" onClick={() => setLookbackHours(24)} style={{ marginRight: '0.25rem', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: lookbackHours === 24 ? '#e0f2fe' : undefined }}>24h</button>

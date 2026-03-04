@@ -11,10 +11,9 @@ from ..config import (
     FEED_LIMIT,
     FEED_RKEY,
     FEED_SERVICE_DID,
-    GRAVITY,
     POSTS_LOOKBACK_HOURS,
 )
-from ..services.skeleton import get_ranked_skeleton
+from ..services.skeleton import get_chronological_skeleton
 
 router = APIRouter()
 
@@ -63,14 +62,13 @@ async def get_feed_skeleton(
     cursor: str | None = Query(None),
 ):
     """
-    Return a ranked list of post URIs (skeleton). Bluesky hydrates them.
-    Ranked by HN-style score: (engagement * authority - 1) / (age_hours + 2)^gravity.
+    Return a list of post URIs (skeleton). Bluesky hydrates them.
+    Returns posts in purely chronological order.
     """
     limit = min(limit, FEED_LIMIT)
-    scored = await get_ranked_skeleton(
+    scored = await get_chronological_skeleton(
         limit=limit,
         lookback_hours=POSTS_LOOKBACK_HOURS,
-        gravity=GRAVITY,
     )
     feed_list = [{"post": uri} for uri, _ in scored]
 

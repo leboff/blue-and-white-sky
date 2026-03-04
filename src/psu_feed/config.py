@@ -60,15 +60,8 @@ def get_authority_dids() -> set[str]:
     return _get_settings_authority_dids() | _EXTRA_AUTHORITY_DIDS
 
 # HN ranking parameters
-GRAVITY = float(os.environ.get("PSU_FEED_GRAVITY", "1.5"))
 POSTS_LOOKBACK_HOURS = int(os.environ.get("PSU_FEED_LOOKBACK_HOURS", "48"))
 FEED_LIMIT = 50
-
-# Authority posts without PSU keywords get rank penalty (default 0.25)
-AUTHORITY_OFFTOPIC_PENALTY = float(os.environ.get("PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY", "0.25"))
-
-# Minimum numerator for HN score so new posts with no engagement still appear (default 1.0). They decay with age.
-FRESH_POST_SCORE_FLOOR = float(os.environ.get("PSU_FEED_FRESH_POST_SCORE_FLOOR", "1.0"))
 
 # --- Redis / Task queue (ARQ) ---
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
