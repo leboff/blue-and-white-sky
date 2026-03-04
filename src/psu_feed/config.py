@@ -44,7 +44,7 @@ FEED_DESCRIPTION = os.environ.get(
     "FEED_DESCRIPTION",
     "Penn State football and other PSU coverage.",
 )
-FEED_RKEY = os.environ.get("FEED_RKEY", "psu-football")
+FEED_RKEY = os.environ.get("FEED_RKEY", "blue-and-white-sky")
 
 # --- Authority & Ranking ---
 from .settings import get_authority_dids as _get_settings_authority_dids
