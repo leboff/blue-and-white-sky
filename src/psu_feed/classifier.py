@@ -19,7 +19,7 @@ Output format: a JSON array of objects with "id" (same URI) and "relevant" (bool
 Example input: [{"id": "at://did:plc:abc123/app.bsky.feed.post/xyz", "post": "This.", "quoted_post": "Penn State wins the White Out! We Are!"}]
 Example output: [{"id": "at://did:plc:abc123/app.bsky.feed.post/xyz", "relevant": true}]"""
 
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 def _get_client() -> genai.Client:
