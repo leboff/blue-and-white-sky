@@ -23,10 +23,11 @@ async def dev_feed(
     limit: int = Query(20, ge=1, le=50),
     gravity: float = Query(None, description="HN gravity (default from config)"),
     lookback_hours: int = Query(None, description="Lookback hours (default from config)"),
-    show_all: bool = Query(False, description="Include pending and rejected posts"),
+    show_all: bool = Query(True, description="Include pending and rejected posts (default True for dev)"),
 ):
     """
     Preview the feed with real post content (JSON). Returns list of posts with score, author, text, engagement, status.
+    By default includes pending/rejected so you see new posts before the classifier runs.
     """
     g = gravity if gravity is not None else GRAVITY
     lookback = lookback_hours if lookback_hours is not None else POSTS_LOOKBACK_HOURS
@@ -34,7 +35,10 @@ async def dev_feed(
         limit=limit, lookback_hours=lookback, gravity=g, include_pending_rejected=show_all
     )
     if not ranked:
-        return {"posts": [], "message": "No posts in the feed yet. Run the ingester and/or backfill to seed the DB."}
+        return {
+            "posts": [],
+            "message": "No posts in the feed yet. Run the ingester and/or backfill to seed the DB. If show_all is false, try show_all=1 to include pending/rejected posts.",
+        }
 
     uris = [r[0] for r in ranked]
     hydrated = await hydrate_posts(uris)

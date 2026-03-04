@@ -80,7 +80,7 @@ def _build_post_uri(did: str, path: str) -> str:
     return f"at://{did}/{path}"
 
 
-async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) -> None:
+async def _handle_post_create(did: str, commit: dict) -> None:
     record = commit.get("record") or {}
     # Jetstream sends "path" (full path) or "collection" + "rkey"; build path if needed
     path = commit.get("path") or ""
@@ -167,7 +167,7 @@ async def _handle_like_create(commit: dict) -> None:
     logger.debug("like subject=%s", uri[:60])
 
 
-async def _handle_repost_create(conn: SQLiteConnection, commit: dict) -> None:
+async def _handle_repost_create(commit: dict) -> None:
     record = commit.get("record") or {}
     uri = _subject_uri_from_record(record)
     if not uri:

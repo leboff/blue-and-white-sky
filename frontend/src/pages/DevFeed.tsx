@@ -8,7 +8,7 @@ export default function DevFeed() {
   const [limit, setLimit] = useState(20)
   const [gravity, setGravity] = useState<number | null>(null)
   const [lookbackHours, setLookbackHours] = useState<number | null>(null)
-  const [showAll, setShowAll] = useState(false)
+  const [showAll, setShowAll] = useState(true)
   const [classifyingUri, setClassifyingUri] = useState<string | null>(null)
 
   const load = useCallback(async () => {
