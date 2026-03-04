@@ -18,7 +18,6 @@ def _get_settings_path() -> Path:
 
 # Defaults for seeding when settings.json is missing (must match original filter/authority_dids)
 DEFAULT_KEYWORDS = [
-    r"\bWe\s?Are\b",
     r"Nittany\s?Lions?",
     r"Beaver\s?Stadium",
     r"Happy\s?Valley",
