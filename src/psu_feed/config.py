@@ -11,8 +11,11 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # --- Database ---
+# Prefer setting DATABASE_PATH explicitly via environment. If missing, default to /app/data/psu_feed.db for Docker,
+# or fallback to local ./data/psu_feed.db
+_default_db_dir = Path("/app/data") if Path("/app").exists() else (BASE_DIR / "data")
 DATABASE_PATH = Path(
-    os.environ.get("DATABASE_PATH", str(BASE_DIR / "data" / "psu_feed.db"))
+    os.environ.get("DATABASE_PATH", str(_default_db_dir / "psu_feed.db"))
 )
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
