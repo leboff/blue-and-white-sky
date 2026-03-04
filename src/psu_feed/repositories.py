@@ -186,6 +186,38 @@ async def increment_replies(session: AsyncSession, subject_uri: str) -> None:
         await session.commit()
 
 
+async def update_post_engagement(
+    session: AsyncSession,
+    uri: str,
+    likes_count: int,
+    reposts_count: int,
+    replies_count: int,
+) -> None:
+    """Set a post's engagement counts (e.g. from Bluesky getPosts). Used to refresh ranking data."""
+    r = await session.execute(select(Post).where(Post.uri == uri))
+    post = r.scalar_one_or_none()
+    if post:
+        post.likes_count = likes_count
+        post.reposts_count = reposts_count
+        post.replies_count = replies_count
+        await session.commit()
+
+
+async def update_posts_engagement_bulk(
+    session: AsyncSession,
+    updates: list[tuple[str, int, int, int]],
+) -> None:
+    """Set engagement counts for many posts. Each item is (uri, likes_count, reposts_count, replies_count)."""
+    for uri, likes_count, reposts_count, replies_count in updates:
+        r = await session.execute(select(Post).where(Post.uri == uri))
+        post = r.scalar_one_or_none()
+        if post:
+            post.likes_count = likes_count
+            post.reposts_count = reposts_count
+            post.replies_count = replies_count
+    await session.commit()
+
+
 async def post_has_keyword_match(session: AsyncSession, uri: str) -> bool:
     r = await session.execute(select(Post).where(Post.uri == uri, Post.keyword_matched == 1))
     return r.scalar_one_or_none() is not None

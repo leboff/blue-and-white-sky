@@ -127,7 +127,8 @@ export default function DevFeed() {
                 <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Author</th>
                 <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Text</th>
                 <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>L/R/R</th>
-                <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Score</th>
+                <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Rank</th>
+                <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Live score</th>
                 <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Created</th>
                 <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Status</th>
                 <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>Link</th>
@@ -146,6 +147,7 @@ export default function DevFeed() {
                     {post.text.slice(0, 200)}{post.text.length > 200 ? '…' : ''}
                   </td>
                   <td style={{ padding: '0.5rem 0.75rem' }}>{post.like_count} / {post.repost_count} / {post.reply_count}</td>
+                  <td style={{ padding: '0.5rem 0.75rem' }}>{post.rank_score != null ? post.rank_score.toFixed(4) : '—'}</td>
                   <td style={{ padding: '0.5rem 0.75rem' }}>{post.score.toFixed(4)}</td>
                   <td style={{ padding: '0.5rem 0.75rem' }}>{post.created.slice(0, 19)}</td>
                   <td style={{ padding: '0.5rem 0.75rem' }}>

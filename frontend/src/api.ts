@@ -28,6 +28,7 @@ export async function saveSettings(data: Settings): Promise<{ ok: boolean }> {
 export type DevPost = {
   uri: string
   score: number
+  rank_score?: number
   handle: string
   display_name: string
   text: string

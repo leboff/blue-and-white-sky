@@ -6,7 +6,13 @@ from fastapi import APIRouter, Body, HTTPException, Query
 
 from ..classifier import classify_posts as llm_classify_posts
 from ..config import GRAVITY, POSTS_LOOKBACK_HOURS
-from ..db import delete_post, get_session, update_post_classification
+from ..db import (
+    delete_post,
+    get_recent_posts_with_authority,
+    get_session,
+    update_post_classification,
+    update_posts_engagement_bulk,
+)
 from ..ranking import calculate_hn_score
 from ..services.skeleton import (
     get_ranked_skeleton_with_meta,
@@ -31,6 +37,32 @@ async def dev_feed(
     """
     g = gravity if gravity is not None else GRAVITY
     lookback = lookback_hours if lookback_hours is not None else POSTS_LOOKBACK_HOURS
+
+    # When showing approved only, refresh engagement from Bluesky so ranking uses current
+    # likes/reposts/replies (not just Jetstream events we've seen). Ensures viral posts rank #1.
+    if not show_all:
+        async with get_session() as session:
+            rows = await get_recent_posts_with_authority(
+                session, lookback, include_pending_rejected=False
+            )
+        uris_refresh = [row.uri for row in rows][:500]
+        if uris_refresh:
+            hydrated_refresh = await hydrate_posts(uris_refresh)
+            updates = []
+            for uri in uris_refresh:
+                post = hydrated_refresh.get(uri)
+                if not post:
+                    continue
+                updates.append((
+                    uri,
+                    post.get("likeCount") or 0,
+                    post.get("repostCount") or 0,
+                    post.get("replyCount") or 0,
+                ))
+            if updates:
+                async with get_session() as session:
+                    await update_posts_engagement_bulk(session, updates)
+
     ranked = await get_ranked_skeleton_with_meta(
         limit=limit, lookback_hours=lookback, gravity=g, include_pending_rejected=show_all
     )
@@ -44,7 +76,7 @@ async def dev_feed(
     hydrated = await hydrate_posts(uris)
 
     with_scores = []
-    for uri, _db_score, mult, followers, created_at, author_did, llm_approved in ranked:
+    for uri, rank_score, mult, followers, created_at, author_did, llm_approved in ranked:
         post = hydrated.get(uri) or {}
         author = post.get("author") or {}
         handle = author.get("handle") or "?"
@@ -63,12 +95,13 @@ async def dev_feed(
                 has_media = 1
 
         quoted_text = quoted_text_from_hydrated_post(post)
-        score = calculate_hn_score(like_count, repost_count, reply_count, has_media, mult, created_at, g)
+        live_score = calculate_hn_score(like_count, repost_count, reply_count, has_media, mult, created_at, g)
         status = llm_status_label(llm_approved)
         link = f"https://bsky.app/profile/{handle}/post/{uri.split('/')[-1]}" if handle else ""
         with_scores.append({
             "uri": uri,
-            "score": round(score, 4),
+            "score": round(live_score, 4),
+            "rank_score": round(rank_score, 4),
             "handle": handle,
             "display_name": display_name,
             "text": text,
@@ -81,7 +114,7 @@ async def dev_feed(
             "link": link,
         })
 
-    with_scores.sort(key=lambda x: -x["score"])
+    # Keep skeleton order (no re-sort by live score). Limit=20 then shows the same top 20 as the real feed.
     return {"posts": with_scores}
 
 
