@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS posts (
     keyword_matched INTEGER NOT NULL DEFAULT 1,
     llm_approved INTEGER NOT NULL DEFAULT 1,
     post_text TEXT,
+    quoted_post_uri TEXT,
     FOREIGN KEY (author_did) REFERENCES users(did)
 );
 
@@ -73,6 +74,9 @@ async def init_db(db_path: Path | None = None) -> None:
         if "post_text" not in pcols:
             await conn.execute("ALTER TABLE posts ADD COLUMN post_text TEXT")
             await conn.commit()
+        if "quoted_post_uri" not in pcols:
+            await conn.execute("ALTER TABLE posts ADD COLUMN quoted_post_uri TEXT")
+            await conn.commit()
     finally:
         await conn.close()
 
@@ -87,11 +91,12 @@ async def insert_post(
     has_media: int = 0,
     llm_approved: int = 1,
     post_text: str | None = None,
+    quoted_post_uri: str | None = None,
 ) -> None:
-    """llm_approved: 0=pending, 1=approved, 2=rejected. Ingester uses 0 and may set post_text for classification."""
+    """llm_approved: 0=pending, 1=approved, 2=rejected. Ingester uses 0 and may set post_text, quoted_post_uri for classification."""
     await conn.execute(
-        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched, has_media, llm_approved, post_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (uri, cid, author_did, created_at.isoformat(), keyword_matched, has_media, llm_approved, post_text),
+        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched, has_media, llm_approved, post_text, quoted_post_uri) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (uri, cid, author_did, created_at.isoformat(), keyword_matched, has_media, llm_approved, post_text, quoted_post_uri),
     )
 
 
@@ -198,11 +203,11 @@ async def get_recent_posts_with_authority(
 async def get_pending_posts(
     conn: aiosqlite.Connection,
     limit: int = 50,
-) -> list[tuple[str, str]]:
-    """Returns (uri, post_text) for posts with llm_approved=0. Only rows with non-empty post_text are useful for LLM; empty text is skipped by classifier."""
+) -> list[tuple[str, str, str | None]]:
+    """Returns (uri, post_text, quoted_post_uri) for posts with llm_approved=0. quoted_post_uri is set when the post is a quote repost."""
     cursor = await conn.execute(
         """
-        SELECT p.uri, COALESCE(p.post_text, '')
+        SELECT p.uri, COALESCE(p.post_text, ''), p.quoted_post_uri
         FROM posts p
         WHERE p.llm_approved = 0
         ORDER BY p.created_at DESC
@@ -211,7 +216,7 @@ async def get_pending_posts(
         (limit,),
     )
     rows = await cursor.fetchall()
-    return [(r[0], r[1]) for r in rows]
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 async def update_post_classification(

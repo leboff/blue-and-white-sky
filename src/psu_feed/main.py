@@ -229,6 +229,21 @@ async def _hydrate_posts(uris: list[str]) -> dict[str, dict]:
     return out
 
 
+def _quoted_text_from_hydrated_post(post: dict) -> str:
+    """Extract quoted/reposted post text from a hydrated getPosts post dict."""
+    record = post.get("record") or {}
+    embed = record.get("embed") or post.get("embed")
+    if not isinstance(embed, dict):
+        return ""
+    rec = embed.get("record")
+    if not isinstance(rec, dict):
+        return ""
+    val = rec.get("value") or rec
+    if isinstance(val, dict):
+        return (val.get("text") or "").strip()
+    return ""
+
+
 def _llm_status_label(llm_approved: int) -> str:
     if llm_approved == 0:
         return "pending"
@@ -276,18 +291,21 @@ async def dev_feed(
                 if embed_type in ("app.bsky.embed.images", "app.bsky.embed.video", "app.bsky.embed.external", "app.bsky.embed.recordWithMedia"):
                     has_media = 1
             
+            quoted_text = _quoted_text_from_hydrated_post(post)
             score = calculate_hn_score(like_count, repost_count, reply_count, has_media, mult, created_at, g)
-            with_scores.append((score, uri, handle, display_name, text, like_count, repost_count, reply_count, created, llm_approved))
+            with_scores.append((score, uri, handle, display_name, text, like_count, repost_count, reply_count, created, llm_approved, quoted_text))
         with_scores.sort(key=lambda x: -x[0])
         rows = []
-        for i, (score, uri, handle, display_name, text, like_count, repost_count, reply_count, created, llm_approved) in enumerate(with_scores, 1):
+        for i, (score, uri, handle, display_name, text, like_count, repost_count, reply_count, created, llm_approved, quoted_text) in enumerate(with_scores, 1):
             uri_escaped = html.escape(uri, quote=True)
             text_for_btn = (text or "")[:2000]
             text_escaped = html.escape(text_for_btn, quote=True)
+            quoted_for_btn = (quoted_text or "")[:2000]
+            quoted_escaped = html.escape(quoted_for_btn, quote=True)
             status = _llm_status_label(llm_approved)
             rows.append(
                 f"""
-                <tr data-uri="{uri_escaped}" data-text="{text_escaped}">
+                <tr data-uri="{uri_escaped}" data-text="{text_escaped}" data-quoted-text="{quoted_escaped}">
                     <td>{i}</td>
                     <td><strong>{html.escape(display_name)}</strong> @{html.escape(handle)}</td>
                     <td>{html.escape(text[:200])}{"…" if len(text) > 200 else ""}</td>
@@ -296,7 +314,7 @@ async def dev_feed(
                     <td>{html.escape(created[:19]) if created else ""}</td>
                     <td><span class="llm-status" data-status="{status}">{status}</span></td>
                     <td><a href="https://bsky.app/profile/{handle}/post/{uri.split("/")[-1]}" target="_blank">Open</a></td>
-                    <td><button type="button" class="dev-feed-classify" data-uri="{uri_escaped}" data-text="{text_escaped}">Classify</button></td>
+                    <td><button type="button" class="dev-feed-classify" data-uri="{uri_escaped}" data-text="{text_escaped}" data-quoted-text="{quoted_escaped}">Classify</button></td>
                     <td><button type="button" class="dev-feed-delete" data-uri="{uri_escaped}">Delete</button></td>
                 </tr>
                 """
@@ -338,12 +356,15 @@ async def dev_feed(
             btn.addEventListener('click', function() {{
                 var uri = this.getAttribute('data-uri');
                 var text = this.getAttribute('data-text') || '';
+                var quotedText = this.getAttribute('data-quoted-text') || '';
                 if (!uri) return;
                 this.disabled = true;
+                var body = {{ uri: uri, text: text }};
+                if (quotedText) body.quoted_text = quotedText;
                 fetch('/dev/feed/classify-post', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ uri: uri, text: text }})
+                    body: JSON.stringify(body)
                 }}).then(function(r) {{ return r.json().then(function(data) {{
                     if (r.ok) {{
                         var statusEl = btn.closest('tr').querySelector('.llm-status');
@@ -383,16 +404,21 @@ async def dev_feed_delete_post(body: dict = Body(...)):
 
 @app.post("/dev/feed/classify-post")
 async def dev_feed_classify_post(body: dict = Body(...)):
-    """Run LLM classification for a single post. Body: {uri: string, text: string}. Returns {ok: true, relevant: bool}."""
+    """Run LLM classification for a single post. Body: {uri, text, optional quoted_text}. Returns {ok: true, relevant: bool}."""
     uri = body.get("uri")
     text = body.get("text")
+    quoted_text = body.get("quoted_text")
     if not uri or not isinstance(uri, str):
         raise HTTPException(400, "body must include uri (string)")
     if text is None:
         text = ""
     text = str(text)
+    quoted_text = (str(quoted_text) if quoted_text is not None else "").strip() or None
+    payload: dict = {"id": uri.strip(), "post": text}
+    if quoted_text:
+        payload["quoted_post"] = quoted_text
     try:
-        result = await llm_classify_posts([{"id": uri.strip(), "post": text}])
+        result = await llm_classify_posts([payload])
     except ValueError as e:
         raise HTTPException(503, str(e))  # e.g. GEMINI_API_KEY not set
     relevant = result.get(uri.strip(), False)

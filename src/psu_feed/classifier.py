@@ -11,12 +11,12 @@ from google.genai.types import GenerateContentConfig
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_INSTRUCTION = """You are the gatekeeper to a Bluesky feed about all things Penn State. Your job is to classify Bluesky posts as either relevant or irrelevant. The posts are matched by user or keyword and then sent to you for evaluation. Relevant means the post is substantively about Penn State (university, athletics, community, alumni, etc.). Irrelevant means off-topic (e.g., unrelated sports, "PSU" as power supply, random keyword match). You can only respond with a single JSON array. Do not include any explanation or markdown.
+SYSTEM_INSTRUCTION = """You are the gatekeeper to a Bluesky feed about all things Penn State. Your job is to classify Bluesky posts as either relevant or irrelevant. The posts are matched by user or keyword and then sent to you for evaluation. Relevant means the post is substantively about Penn State (university, athletics, community, alumni, etc.). Irrelevant means off-topic (e.g., unrelated sports, "PSU" as power supply, random keyword match). When a post quotes or reposts another post, consider both the outer post text and the "quoted_post" text together—relevance of either can make the whole post relevant. You can only respond with a single JSON array. Do not include any explanation or markdown.
 
-Input format: a JSON array of objects with "id" (post URI) and "post" (post text).
+Input format: a JSON array of objects. Each has "id" (post URI) and "post" (main post text). Optionally "quoted_post" (text of the quoted/reposted post) when the post is a quote.
 Output format: a JSON array of objects with "id" (same URI) and "relevant" (boolean). One object per input post, same order.
 
-Example input: [{"id": "at://did:plc:abc123/app.bsky.feed.post/xyz", "post": "Can't wait for the White Out game this weekend! We Are!"}]
+Example input: [{"id": "at://did:plc:abc123/app.bsky.feed.post/xyz", "post": "This.", "quoted_post": "Penn State wins the White Out! We Are!"}]
 Example output: [{"id": "at://did:plc:abc123/app.bsky.feed.post/xyz", "relevant": true}]"""
 
 DEFAULT_MODEL = "gemini-2.5-flash-lite"
@@ -32,13 +32,16 @@ def _get_client() -> genai.Client:
 async def classify_posts(posts: list[dict]) -> dict[str, bool]:
     """
     Classify a list of posts as relevant or not to Penn State.
-    posts: list of {"id": uri, "post": text}
+    posts: list of {"id": uri, "post": text, "quoted_post": optional quoted text}
     Returns: dict mapping uri -> True (relevant) or False (irrelevant).
     """
     if not posts:
         return {}
-    # Skip empty text so we don't send useless entries
-    to_send = [p for p in posts if (p.get("post") or "").strip()]
+    # Include posts that have main text and/or quoted text
+    to_send = [
+        p for p in posts
+        if (p.get("post") or "").strip() or (p.get("quoted_post") or "").strip()
+    ]
     if not to_send:
         return {p["id"]: False for p in posts}
 

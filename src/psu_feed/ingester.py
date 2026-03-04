@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import httpx
 import websockets
 from aiosqlite import Connection as SQLiteConnection
 
@@ -126,11 +127,12 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     uri = _build_post_uri(did, path)
     created_at = _parse_created_at(record) or datetime.now(timezone.utc)
     cid = commit.get("cid") or ""
-    # Live stream: insert as pending (llm_approved=0) and store text for batch classification
+    quoted_uri = _quoted_post_uri_from_record(record)
+    # Live stream: insert as pending (llm_approved=0) and store text + quoted_uri for batch classification
     await insert_post(
         conn, uri, cid, did, created_at,
         keyword_matched=keyword_matched, has_media=has_media,
-        llm_approved=0, post_text=text or None,
+        llm_approved=0, post_text=text or None, quoted_post_uri=quoted_uri,
     )
     if did in authority_dids:
         await upsert_user_authority(conn, did, HARDCODED_AUTHORITY)
@@ -170,6 +172,32 @@ async def _handle_repost_create(conn: SQLiteConnection, commit: dict) -> None:
 
 CLASSIFY_BATCH_SIZE = 50
 CLASSIFY_INTERVAL_SEC = 60
+BSKY_GET_POSTS_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts"
+
+
+async def _fetch_post_texts(uris: list[str]) -> dict[str, str]:
+    """Fetch post text for given URIs via Bluesky getPosts. Returns {uri: text}."""
+    out: dict[str, str] = {}
+    batch_size = 25
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for i in range(0, len(uris), batch_size):
+            batch = uris[i : i + batch_size]
+            params = [("uris", u) for u in batch]
+            try:
+                r = await client.get(BSKY_GET_POSTS_URL, params=params)
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            for post in data.get("posts") or []:
+                uri = post.get("uri")
+                if not uri:
+                    continue
+                record = post.get("record") or {}
+                text = (record.get("text") or "").strip()
+                out[uri] = text
+    return out
 
 
 async def _classify_pending_loop() -> None:
@@ -183,12 +211,21 @@ async def _classify_pending_loop() -> None:
         conn = await get_connection()
         try:
             pending = await get_pending_posts(conn, limit=CLASSIFY_BATCH_SIZE)
-            # Only send posts that have text
-            to_send = [{"id": uri, "post": text} for uri, text in pending if (text or "").strip()]
+            # Only send posts that have text (main post or we'll add quoted)
+            quoted_uris = [q for _, _, q in pending if q and (q or "").strip()]
+            quoted_texts = await _fetch_post_texts(list(dict.fromkeys(quoted_uris))) if quoted_uris else {}
+            to_send = []
+            for uri, text, quoted_uri in pending:
+                if not (text or "").strip() and not quoted_texts.get(quoted_uri or ""):
+                    continue
+                item: dict = {"id": uri, "post": (text or "").strip()}
+                if quoted_uri and quoted_texts.get(quoted_uri):
+                    item["quoted_post"] = quoted_texts[quoted_uri]
+                to_send.append(item)
             if not to_send:
                 continue
             result = await llm_classify_posts(to_send)
-            updates = [(uri, 1 if result.get(uri, False) else 2) for uri, _ in pending]
+            updates = [(uri, 1 if result.get(uri, False) else 2) for uri, _, _ in pending]
             await update_post_classification(conn, updates)
             await conn.commit()
             approved = sum(1 for _, v in updates if v == 1)
