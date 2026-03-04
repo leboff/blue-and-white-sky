@@ -6,7 +6,7 @@ export default function DevFeed() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState(20)
-  const [gravity, setGravity] = useState<number | null>(null)
+  const [gravity, setGravity] = useState<number>(1.5)
   const [lookbackHours, setLookbackHours] = useState<number | null>(null)
   const [showAll, setShowAll] = useState(true)
   const [classifyingUri, setClassifyingUri] = useState<string | null>(null)
@@ -17,7 +17,7 @@ export default function DevFeed() {
     try {
       const res = await getDevFeed({
         limit: limit,
-        gravity: gravity ?? undefined,
+        gravity,
         lookback_hours: lookbackHours ?? undefined,
         show_all: showAll,
       })
@@ -77,22 +77,30 @@ export default function DevFeed() {
           <option value={20}>20</option>
           <option value={50}>50</option>
         </select>
-        Tuning:{' '}
-        <a href="?" onClick={(e) => { e.preventDefault(); setGravity(1.5); }}>gravity=1.5</a>
-        {' | '}
-        <a href="?" onClick={(e) => { e.preventDefault(); setGravity(1.8); }}>1.8</a>
-        {' | '}
-        <a href="?" onClick={(e) => { e.preventDefault(); setLookbackHours(24); }}>lookback=24h</a>
-        {' | '}
-        <a href="?" onClick={(e) => { e.preventDefault(); setLookbackHours(48); }}>48h</a>
-        {' | '}
-        <a href="?" onClick={(e) => { e.preventDefault(); setLookbackHours(72); }}>72h</a>
-        {' | '}
-        <button type="button" onClick={() => setShowAll(true)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+        {' '}
+        Gravity:{' '}
+        <input
+          type="range"
+          min={1}
+          max={5}
+          step={0.1}
+          value={gravity}
+          onChange={(e) => setGravity(Number(e.target.value))}
+          style={{ verticalAlign: 'middle', marginRight: '0.5rem' }}
+        />
+        <span style={{ minWidth: '2.5rem', display: 'inline-block' }}>{gravity.toFixed(1)}</span>
+        {' '}
+        Lookback:{' '}
+        <button type="button" onClick={() => setLookbackHours(24)} style={{ marginRight: '0.25rem', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: lookbackHours === 24 ? '#e0f2fe' : undefined }}>24h</button>
+        <button type="button" onClick={() => setLookbackHours(48)} style={{ marginRight: '0.25rem', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: lookbackHours === 48 ? '#e0f2fe' : undefined }}>48h</button>
+        <button type="button" onClick={() => setLookbackHours(72)} style={{ marginRight: '0.5rem', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: lookbackHours === 72 ? '#e0f2fe' : undefined }}>72h</button>
+        <button type="button" onClick={() => setLookbackHours(null)} style={{ padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: lookbackHours === null ? '#e0f2fe' : undefined }}>default</button>
+        {' '}
+        Status:{' '}
+        <button type="button" onClick={() => setShowAll(true)} style={{ marginRight: '0.25rem', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: showAll ? '#e0f2fe' : undefined }}>
           Show pending/rejected
         </button>
-        {' | '}
-        <button type="button" onClick={() => setShowAll(false)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+        <button type="button" onClick={() => setShowAll(false)} style={{ padding: '0.2rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: 'pointer', background: !showAll ? '#e0f2fe' : undefined }}>
           Approved only
         </button>
       </p>
@@ -104,7 +112,12 @@ export default function DevFeed() {
       )}
 
       {loading && <p>Loading…</p>}
-      {!loading && data?.message && !data.posts?.length && <p>{data.message}</p>}
+      {!loading && data?.message && !data.posts?.length && (
+        <p>
+          {data.message}
+          {!showAll && ' Try “Show pending/rejected” to see unclassified posts.'}
+        </p>
+      )}
       {!loading && data && data.posts.length > 0 && (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderRadius: '0.5rem' }}>

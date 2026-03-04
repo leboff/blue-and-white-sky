@@ -55,7 +55,7 @@ export async function getDevFeed(params: {
   if (params.limit != null) sp.set('limit', String(params.limit))
   if (params.gravity != null) sp.set('gravity', String(params.gravity))
   if (params.lookback_hours != null) sp.set('lookback_hours', String(params.lookback_hours))
-  if (params.show_all) sp.set('show_all', '1')
+  if (params.show_all !== undefined) sp.set('show_all', params.show_all ? '1' : '0')
   const r = await fetch(`${BASE}/dev/feed?${sp}`)
   if (!r.ok) throw new Error(r.statusText)
   return r.json()
