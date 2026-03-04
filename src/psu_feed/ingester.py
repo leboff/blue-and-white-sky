@@ -11,8 +11,10 @@ import websockets
 from aiosqlite import Connection as SQLiteConnection
 
 from .config import get_authority_dids, JETSTREAM_WS_URL
+from .classifier import classify_posts as llm_classify_posts
 from .db import (
     get_connection,
+    get_pending_posts,
     init_db,
     increment_likes,
     increment_reposts,
@@ -20,6 +22,7 @@ from .db import (
     insert_post,
     maybe_promote_authority,
     post_has_keyword_match,
+    update_post_classification,
     upsert_user_authority,
     increment_user_match_count,
 )
@@ -123,7 +126,12 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     uri = _build_post_uri(did, path)
     created_at = _parse_created_at(record) or datetime.now(timezone.utc)
     cid = commit.get("cid") or ""
-    await insert_post(conn, uri, cid, did, created_at, keyword_matched=keyword_matched, has_media=has_media)
+    # Live stream: insert as pending (llm_approved=0) and store text for batch classification
+    await insert_post(
+        conn, uri, cid, did, created_at,
+        keyword_matched=keyword_matched, has_media=has_media,
+        llm_approved=0, post_text=text or None,
+    )
     if did in authority_dids:
         await upsert_user_authority(conn, did, HARDCODED_AUTHORITY)
     else:
@@ -158,6 +166,37 @@ async def _handle_repost_create(conn: SQLiteConnection, commit: dict) -> None:
         return
     await increment_reposts(conn, uri)
     logger.debug("repost subject=%s", uri[:60])
+
+
+CLASSIFY_BATCH_SIZE = 50
+CLASSIFY_INTERVAL_SEC = 60
+
+
+async def _classify_pending_loop() -> None:
+    """Every CLASSIFY_INTERVAL_SEC seconds, fetch pending posts and run LLM classification."""
+    import os
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        logger.warning("GEMINI_API_KEY not set — LLM classification disabled; posts will stay pending")
+        return
+    while True:
+        await asyncio.sleep(CLASSIFY_INTERVAL_SEC)
+        conn = await get_connection()
+        try:
+            pending = await get_pending_posts(conn, limit=CLASSIFY_BATCH_SIZE)
+            # Only send posts that have text
+            to_send = [{"id": uri, "post": text} for uri, text in pending if (text or "").strip()]
+            if not to_send:
+                continue
+            result = await llm_classify_posts(to_send)
+            updates = [(uri, 1 if result.get(uri, False) else 2) for uri, _ in pending]
+            await update_post_classification(conn, updates)
+            await conn.commit()
+            approved = sum(1 for _, v in updates if v == 1)
+            logger.info("classified %d posts: %d approved, %d rejected", len(updates), approved, len(updates) - approved)
+        except Exception as e:
+            logger.exception("classify_pending_loop error: %s", e)
+        finally:
+            await conn.close()
 
 
 async def _reload_settings_loop() -> None:
@@ -218,6 +257,7 @@ async def run_ingester() -> None:
             ) as ws:
                 conn = await get_connection()
                 reload_task = asyncio.create_task(_reload_settings_loop())
+                classify_task = asyncio.create_task(_classify_pending_loop())
 
                 try:
                     async for message in ws:
@@ -225,8 +265,13 @@ async def run_ingester() -> None:
                         await conn.commit()
                 finally:
                     reload_task.cancel()
+                    classify_task.cancel()
                     try:
                         await reload_task
+                    except asyncio.CancelledError:
+                        pass
+                    try:
+                        await classify_task
                     except asyncio.CancelledError:
                         pass
                     await conn.close()

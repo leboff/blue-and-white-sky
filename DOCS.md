@@ -67,6 +67,8 @@ Loaded from `.env` in the project root (via `python-dotenv`). Main variables:
 | `PSU_FEED_GRAVITY` | HN gravity (default `1.5`). |
 | `PSU_FEED_LOOKBACK_HOURS` | How many hours of posts to consider when ranking (default `48`). |
 | `PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY` | Multiplier for authority posts that don’t match PSU keywords (default `0.25`; lower = rank lower). |
+| `GEMINI_API_KEY` | Google AI API key for LLM post classification (live stream only). If unset, ingester still inserts posts but they remain pending. |
+| `GEMINI_CLASSIFIER_MODEL` | Gemini model id (default `gemini-2.5-flash-lite`). |
 
 ---
 

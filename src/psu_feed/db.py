@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS posts (
     replies_count INTEGER NOT NULL DEFAULT 0,
     has_media INTEGER NOT NULL DEFAULT 0,
     keyword_matched INTEGER NOT NULL DEFAULT 1,
+    llm_approved INTEGER NOT NULL DEFAULT 1,
+    post_text TEXT,
     FOREIGN KEY (author_did) REFERENCES users(did)
 );
 
@@ -64,6 +66,13 @@ async def init_db(db_path: Path | None = None) -> None:
         if "has_media" not in pcols:
             await conn.execute("ALTER TABLE posts ADD COLUMN has_media INTEGER NOT NULL DEFAULT 0")
             await conn.commit()
+        # llm_approved: 0=pending, 1=approved, 2=rejected. Only approved (1) appear in feed.
+        if "llm_approved" not in pcols:
+            await conn.execute("ALTER TABLE posts ADD COLUMN llm_approved INTEGER NOT NULL DEFAULT 1")
+            await conn.commit()
+        if "post_text" not in pcols:
+            await conn.execute("ALTER TABLE posts ADD COLUMN post_text TEXT")
+            await conn.commit()
     finally:
         await conn.close()
 
@@ -76,10 +85,13 @@ async def insert_post(
     created_at: datetime,
     keyword_matched: int = 1,
     has_media: int = 0,
+    llm_approved: int = 1,
+    post_text: str | None = None,
 ) -> None:
+    """llm_approved: 0=pending, 1=approved, 2=rejected. Ingester uses 0 and may set post_text for classification."""
     await conn.execute(
-        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched, has_media) VALUES (?, ?, ?, ?, ?, ?)",
-        (uri, cid, author_did, created_at.isoformat(), keyword_matched, has_media),
+        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched, has_media, llm_approved, post_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (uri, cid, author_did, created_at.isoformat(), keyword_matched, has_media, llm_approved, post_text),
     )
 
 
@@ -163,18 +175,52 @@ async def delete_post(conn: aiosqlite.Connection, uri: str) -> bool:
 async def get_recent_posts_with_authority(
     conn: aiosqlite.Connection,
     lookback_hours: int,
-) -> list[tuple[str, int, int, int, int, float, int | None, int, str, str]]:
-    """Returns (uri, likes_count, reposts_count, replies_count, has_media, authority_multiplier, followers_count, keyword_matched, created_at, author_did)."""
+    include_pending_rejected: bool = False,
+) -> list[tuple[str, int, int, int, int, float, int | None, int, str, str, int]]:
+    """Returns (uri, likes_count, reposts_count, replies_count, has_media, authority_multiplier, followers_count, keyword_matched, created_at, author_did, llm_approved).
+    When include_pending_rejected is False (feed), only rows with llm_approved=1 are returned; llm_approved is still last in tuple."""
+    where_llm = "" if include_pending_rejected else " AND p.llm_approved = 1"
     cursor = await conn.execute(
-        """
+        f"""
         SELECT p.uri, p.likes_count, p.reposts_count, p.replies_count, p.has_media, COALESCE(u.authority_multiplier, 1.0), u.followers_count,
-               COALESCE(p.keyword_matched, 1), p.created_at, p.author_did
+               COALESCE(p.keyword_matched, 1), p.created_at, p.author_did, COALESCE(p.llm_approved, 1)
         FROM posts p
         LEFT JOIN users u ON p.author_did = u.did
-        WHERE datetime(p.created_at) >= datetime('now', ?)
+        WHERE datetime(p.created_at) >= datetime('now', ?){where_llm}
         ORDER BY p.created_at DESC
         """,
         (f"-{lookback_hours} hours",),
     )
     rows = await cursor.fetchall()
-    return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]) for r in rows]
+    return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10]) for r in rows]
+
+
+async def get_pending_posts(
+    conn: aiosqlite.Connection,
+    limit: int = 50,
+) -> list[tuple[str, str]]:
+    """Returns (uri, post_text) for posts with llm_approved=0. Only rows with non-empty post_text are useful for LLM; empty text is skipped by classifier."""
+    cursor = await conn.execute(
+        """
+        SELECT p.uri, COALESCE(p.post_text, '')
+        FROM posts p
+        WHERE p.llm_approved = 0
+        ORDER BY p.created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = await cursor.fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+async def update_post_classification(
+    conn: aiosqlite.Connection,
+    updates: list[tuple[str, int]],
+) -> None:
+    """Update llm_approved for given URIs. Values: 1=approved, 2=rejected."""
+    for uri, llm_approved in updates:
+        await conn.execute(
+            "UPDATE posts SET llm_approved = ? WHERE uri = ?",
+            (llm_approved, uri),
+        )

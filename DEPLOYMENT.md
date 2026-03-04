@@ -76,6 +76,10 @@ BLUESKY_APP_PASSWORD=your-app-password
 # Required for Bluesky to discover and call your feed (use your real domain)
 FEED_SERVICE_DID=did:web:yourdomain.com
 
+# Optional: LLM classification (live stream). If set, pending posts are classified every 60s.
+# GEMINI_API_KEY=your-google-ai-api-key
+# GEMINI_CLASSIFIER_MODEL=gemini-2.5-flash-lite
+
 # Optional: defaults are usually fine
 # DATABASE_PATH=/opt/blue-and-white-sky/data/psu_feed.db
 # FEED_DISPLAY_NAME=Penn State Football

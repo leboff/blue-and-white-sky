@@ -17,7 +17,13 @@ from .config import (
     GRAVITY,
     POSTS_LOOKBACK_HOURS,
 )
-from .db import delete_post, get_connection, get_recent_posts_with_authority
+from .classifier import classify_posts as llm_classify_posts
+from .db import (
+    delete_post,
+    get_connection,
+    get_recent_posts_with_authority,
+    update_post_classification,
+)
 from .ranking import calculate_hn_score, effective_authority_multiplier
 
 app = FastAPI(title="Penn State Football Feed")
@@ -83,7 +89,7 @@ async def get_feed_skeleton(
         await conn.close()
 
     scored_initial = []
-    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did in rows:
+    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did, _ in rows:
         base_score = calculate_hn_score(
             likes,
             reposts,
@@ -136,7 +142,7 @@ async def _get_ranked_skeleton(
         await conn.close()
         
     scored_initial = []
-    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did in rows:
+    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did, _ in rows:
         base_score = calculate_hn_score(
             likes,
             reposts,
@@ -167,16 +173,17 @@ async def _get_ranked_skeleton_with_meta(
     limit: int,
     lookback_hours: int,
     gravity: float,
-) -> list[tuple[str, float, float, int | None, str, str]]:
-    """Return [(uri, score, effective_authority_multiplier, followers_count, created_at, author_did), ...] for dev view."""
+    include_pending_rejected: bool = False,
+) -> list[tuple[str, float, float, int | None, str, str, int]]:
+    """Return [(uri, score, eff_mult, followers, created_at, author_did, llm_approved), ...] for dev view. llm_approved: 0=pending, 1=approved, 2=rejected."""
     conn = await get_connection()
     try:
-        rows = await get_recent_posts_with_authority(conn, lookback_hours)
+        rows = await get_recent_posts_with_authority(conn, lookback_hours, include_pending_rejected=include_pending_rejected)
     finally:
         await conn.close()
         
     scored_initial = []
-    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did in rows:
+    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did, llm_approved in rows:
         base_score = calculate_hn_score(
             likes,
             reposts,
@@ -186,19 +193,19 @@ async def _get_ranked_skeleton_with_meta(
             created_at,
             gravity,
         )
-        scored_initial.append((uri, base_score, effective_authority_multiplier(mult, followers, keyword_matched), followers, created_at, author_did))
+        scored_initial.append((uri, base_score, effective_authority_multiplier(mult, followers, keyword_matched), followers, created_at, author_did, llm_approved))
         
     scored_initial.sort(key=lambda x: -x[1])
     
     author_counts = {}
     scored = []
     for item in scored_initial:
-        uri, score, eff_mult, followers, created_at, author_did = item
+        uri, score, eff_mult, followers, created_at, author_did, llm_approved = item
         count = author_counts.get(author_did, 0)
         diversity_penalty = 0.8 ** count
         final_score = score * diversity_penalty
         author_counts[author_did] = count + 1
-        scored.append((uri, final_score, eff_mult, followers, created_at, author_did))
+        scored.append((uri, final_score, eff_mult, followers, created_at, author_did, llm_approved))
         
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
@@ -222,11 +229,20 @@ async def _hydrate_posts(uris: list[str]) -> dict[str, dict]:
     return out
 
 
+def _llm_status_label(llm_approved: int) -> str:
+    if llm_approved == 0:
+        return "pending"
+    if llm_approved == 1:
+        return "approved"
+    return "rejected"
+
+
 @app.get("/dev/feed")
 async def dev_feed(
     limit: int = Query(20, ge=1, le=50),
     gravity: float = Query(None, description="HN gravity (default from config)"),
     lookback_hours: int = Query(None, description="Lookback hours (default from config)"),
+    show_all: bool = Query(False, description="Include pending and rejected posts"),
 ):
     """
     Preview the feed with real post content. Use this to see what the feed returns
@@ -234,7 +250,7 @@ async def dev_feed(
     """
     g = gravity if gravity is not None else GRAVITY
     lookback = lookback_hours if lookback_hours is not None else POSTS_LOOKBACK_HOURS
-    ranked = await _get_ranked_skeleton_with_meta(limit=limit, lookback_hours=lookback, gravity=g)
+    ranked = await _get_ranked_skeleton_with_meta(limit=limit, lookback_hours=lookback, gravity=g, include_pending_rejected=show_all)
     if not ranked:
         html_body = "<p>No posts in the feed yet. Run the ingester and/or backfill to seed the DB.</p>"
     else:
@@ -242,7 +258,7 @@ async def dev_feed(
         hydrated = await _hydrate_posts(uris)
         # Compute live score (Bluesky API engagement) for each so order and displayed score are correct
         with_scores = []
-        for uri, _db_score, mult, followers, created_at, author_did in ranked:
+        for uri, _db_score, mult, followers, created_at, author_did, llm_approved in ranked:
             post = hydrated.get(uri) or {}
             author = post.get("author") or {}
             handle = author.get("handle") or "?"
@@ -261,34 +277,42 @@ async def dev_feed(
                     has_media = 1
             
             score = calculate_hn_score(like_count, repost_count, reply_count, has_media, mult, created_at, g)
-            with_scores.append((score, uri, handle, display_name, text, like_count, repost_count, reply_count, created))
+            with_scores.append((score, uri, handle, display_name, text, like_count, repost_count, reply_count, created, llm_approved))
         with_scores.sort(key=lambda x: -x[0])
         rows = []
-        for i, (score, uri, handle, display_name, text, like_count, repost_count, reply_count, created) in enumerate(with_scores, 1):
+        for i, (score, uri, handle, display_name, text, like_count, repost_count, reply_count, created, llm_approved) in enumerate(with_scores, 1):
             uri_escaped = html.escape(uri, quote=True)
+            text_for_btn = (text or "")[:2000]
+            text_escaped = html.escape(text_for_btn, quote=True)
+            status = _llm_status_label(llm_approved)
             rows.append(
                 f"""
-                <tr data-uri="{uri_escaped}">
+                <tr data-uri="{uri_escaped}" data-text="{text_escaped}">
                     <td>{i}</td>
                     <td><strong>{html.escape(display_name)}</strong> @{html.escape(handle)}</td>
                     <td>{html.escape(text[:200])}{"…" if len(text) > 200 else ""}</td>
                     <td>{like_count} / {repost_count} / {reply_count}</td>
                     <td>{score:.4f}</td>
                     <td>{html.escape(created[:19]) if created else ""}</td>
-                    <td><a href="https://bsky.app/profile/{handle}/post/{uri.split('/')[-1]}" target="_blank">Open</a></td>
+                    <td><span class="llm-status" data-status="{status}">{status}</span></td>
+                    <td><a href="https://bsky.app/profile/{handle}/post/{uri.split("/")[-1]}" target="_blank">Open</a></td>
+                    <td><button type="button" class="dev-feed-classify" data-uri="{uri_escaped}" data-text="{text_escaped}">Classify</button></td>
                     <td><button type="button" class="dev-feed-delete" data-uri="{uri_escaped}">Delete</button></td>
                 </tr>
                 """
             )
+        show_all_param = "&show_all=1" if show_all else ""
         html_body = f"""
-        <p>Tuning: <a href="?limit={limit}&gravity=1.5&lookback_hours={lookback}">gravity=1.5</a> |
-        <a href="?limit={limit}&gravity=1.8&lookback_hours={lookback}">1.8</a> |
-        <a href="?limit={limit}&gravity={g}&lookback_hours=24">lookback=24h</a> |
-        <a href="?limit={limit}&gravity={g}&lookback_hours=48">48h</a> |
-        <a href="?limit={limit}&gravity={g}&lookback_hours=72">72h</a></p>
+        <p>Tuning: <a href="?limit={limit}&gravity=1.5&lookback_hours={lookback}{show_all_param}">gravity=1.5</a> |
+        <a href="?limit={limit}&gravity=1.8&lookback_hours={lookback}{show_all_param}">1.8</a> |
+        <a href="?limit={limit}&gravity={g}&lookback_hours=24{show_all_param}">lookback=24h</a> |
+        <a href="?limit={limit}&gravity={g}&lookback_hours=48{show_all_param}">48h</a> |
+        <a href="?limit={limit}&gravity={g}&lookback_hours=72{show_all_param}">72h</a>
+        | <a href="?limit={limit}&gravity={g}&lookback_hours={lookback}&show_all=1">Show pending/rejected</a>
+        | <a href="?limit={limit}&gravity={g}&lookback_hours={lookback}">Approved only</a></p>
         <table border="1" cellpadding="8" style="border-collapse: collapse; width:100%;">
             <thead><tr>
-                <th>#</th><th>Author</th><th>Text</th><th>Likes / Reposts / Replies</th><th>Score</th><th>Created</th><th>Link</th><th></th>
+                <th>#</th><th>Author</th><th>Text</th><th>L/R/R</th><th>Score</th><th>Created</th><th>Status</th><th>Link</th><th></th><th></th>
             </tr></thead>
             <tbody>
                 {"".join(rows)}
@@ -308,6 +332,24 @@ async def dev_feed(
                     if (r.ok) row.remove();
                     else r.text().then(function(t) {{ alert('Delete failed: ' + t); }});
                 }}).catch(function(e) {{ alert('Delete failed: ' + e); }});
+            }});
+        }});
+        document.querySelectorAll('.dev-feed-classify').forEach(function(btn) {{
+            btn.addEventListener('click', function() {{
+                var uri = this.getAttribute('data-uri');
+                var text = this.getAttribute('data-text') || '';
+                if (!uri) return;
+                this.disabled = true;
+                fetch('/dev/feed/classify-post', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ uri: uri, text: text }})
+                }}).then(function(r) {{ return r.json().then(function(data) {{
+                    if (r.ok) {{
+                        var statusEl = btn.closest('tr').querySelector('.llm-status');
+                        if (statusEl) {{ statusEl.textContent = data.relevant ? 'approved' : 'rejected'; statusEl.setAttribute('data-status', data.relevant ? 'approved' : 'rejected'); }}
+                    }} else {{ var msg = typeof data.detail === 'string' ? data.detail : (data.detail && data.detail.msg ? data.detail.msg : 'Classify failed'); alert(msg); }}
+                }}); }}).catch(function(e) {{ alert('Classify failed: ' + e); }}).finally(function() {{ btn.disabled = false; }});
             }});
         }});
         </script>
@@ -337,6 +379,30 @@ async def dev_feed_delete_post(body: dict = Body(...)):
     if not deleted:
         raise HTTPException(404, "post not found")
     return {"ok": True}
+
+
+@app.post("/dev/feed/classify-post")
+async def dev_feed_classify_post(body: dict = Body(...)):
+    """Run LLM classification for a single post. Body: {uri: string, text: string}. Returns {ok: true, relevant: bool}."""
+    uri = body.get("uri")
+    text = body.get("text")
+    if not uri or not isinstance(uri, str):
+        raise HTTPException(400, "body must include uri (string)")
+    if text is None:
+        text = ""
+    text = str(text)
+    try:
+        result = await llm_classify_posts([{"id": uri.strip(), "post": text}])
+    except ValueError as e:
+        raise HTTPException(503, str(e))  # e.g. GEMINI_API_KEY not set
+    relevant = result.get(uri.strip(), False)
+    conn = await get_connection()
+    try:
+        await update_post_classification(conn, [(uri.strip(), 1 if relevant else 2)])
+        await conn.commit()
+    finally:
+        await conn.close()
+    return {"ok": True, "relevant": relevant}
 
 
 # --- Admin UI (keywords & authorities) ---
