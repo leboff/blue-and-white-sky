@@ -25,16 +25,17 @@ JETSTREAM_WS_URL = os.environ.get(
     "wss://jetstream2.us-east.bsky.network/subscribe",
 )
 
-# --- Feed Generator (Required) ---
+# --- Feed Generator (Required for API / ingester) ---
 BLUESKY_HANDLE = os.environ.get("BLUESKY_HANDLE", "").strip()
 BLUESKY_APP_PASSWORD = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
 
-# Explicit check: If these are missing, Dokploy will show this error in the logs.
-if not BLUESKY_HANDLE or not BLUESKY_APP_PASSWORD:
-    raise EnvironmentError(
-        "Missing BLUESKY_HANDLE or BLUESKY_APP_PASSWORD in environment variables. "
-        "Check your Dokploy environment configuration."
-    )
+def require_bluesky_credentials() -> None:
+    """Call from API or ingester entrypoints. Raises if credentials are missing."""
+    if not BLUESKY_HANDLE or not BLUESKY_APP_PASSWORD:
+        raise EnvironmentError(
+            "Missing BLUESKY_HANDLE or BLUESKY_APP_PASSWORD in environment variables. "
+            "Check your Dokploy environment configuration."
+        )
 
 # --- Feed Identity & Metadata ---
 # did:web:yourdomain.com in production
@@ -65,3 +66,8 @@ FEED_LIMIT = 50
 
 # Authority posts without PSU keywords get rank penalty (default 0.25)
 AUTHORITY_OFFTOPIC_PENALTY = float(os.environ.get("PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY", "0.25"))
+
+# --- Redis / Task queue (ARQ) ---
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+QUEUE_NAME_CLASSIFY = "psu_feed:classify"
+QUEUE_NAME_ENGAGEMENT = "psu_feed:engagement"

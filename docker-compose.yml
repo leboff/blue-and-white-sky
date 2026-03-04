@@ -1,4 +1,10 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   api:
     build: .
     command: uvicorn psu_feed.main:app --host 0.0.0.0 --port 8000
@@ -7,11 +13,14 @@ services:
     volumes:
       - psu_feed_data:/app/data
     restart: unless-stopped
+    depends_on:
+      - redis
     environment:
       - BLUESKY_HANDLE=${BLUESKY_HANDLE}
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
       - FEED_SERVICE_DID=${FEED_SERVICE_DID}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_URL=redis://redis:6379
   ingester:
     build: .
     command: python -m psu_feed.ingester
@@ -20,10 +29,33 @@ services:
     restart: unless-stopped
     depends_on:
       - api
+      - redis
     environment:
       - BLUESKY_HANDLE=${BLUESKY_HANDLE}
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_URL=redis://redis:6379
+  classifier_worker:
+    build: .
+    command: python -m psu_feed.workers.classifier_worker
+    volumes:
+      - psu_feed_data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_URL=redis://redis:6379
+  engagement_worker:
+    build: .
+    command: python -m psu_feed.workers.engagement_worker
+    volumes:
+      - psu_feed_data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
 
 volumes:
   psu_feed_data:

@@ -20,8 +20,8 @@ from atproto_client.models.app.bsky.feed.search_posts import Params as SearchPos
 from .authority_dids import get_authority_accounts, get_authority_dids
 from .config import BLUESKY_APP_PASSWORD, BLUESKY_HANDLE, DATABASE_PATH
 from .db import (
-    get_connection,
     get_keyword_matched_uris,
+    get_session,
     init_db,
     insert_post,
     increment_user_match_count,
@@ -382,20 +382,16 @@ async def _write_batch(
     rows: list[tuple[str, str, str, datetime, int | None, int, int]],
     authority_dids: set[str],
 ) -> None:
-    conn = await get_connection()
-    try:
+    async with get_session() as session:
         for uri, cid, author_did, created_at, followers_count, keyword_matched, has_media in rows:
-            await insert_post(conn, uri, cid, author_did, created_at, keyword_matched=keyword_matched, has_media=has_media)
+            await insert_post(session, uri, cid, author_did, created_at, keyword_matched=keyword_matched, has_media=has_media)
             if author_did in authority_dids:
-                await upsert_user_authority(conn, author_did, HARDCODED_AUTHORITY)
+                await upsert_user_authority(session, author_did, HARDCODED_AUTHORITY)
             else:
-                await increment_user_match_count(conn, author_did)
-                await maybe_promote_authority(conn, author_did, AUTHORITY_THRESHOLD, AUTHORITY_MULTIPLIER)
+                await increment_user_match_count(session, author_did)
+                await maybe_promote_authority(session, author_did, AUTHORITY_THRESHOLD, AUTHORITY_MULTIPLIER)
             if followers_count is not None:
-                await update_user_followers(conn, author_did, followers_count)
-        await conn.commit()
-    finally:
-        await conn.close()
+                await update_user_followers(session, author_did, followers_count)
 
 
 def main() -> None:
@@ -447,11 +443,8 @@ def main() -> None:
 
     async def _load_db_and_keyword_uris():
         await init_db()
-        conn = await get_connection()
-        try:
-            return await get_keyword_matched_uris(conn)
-        finally:
-            await conn.close()
+        async with get_session() as session:
+            return await get_keyword_matched_uris(session)
 
     keyword_matched_uris = asyncio.run(_load_db_and_keyword_uris())
     logger.info("Loaded %d existing keyword-matched URIs from DB (for quote-repost inclusion)", len(keyword_matched_uris))

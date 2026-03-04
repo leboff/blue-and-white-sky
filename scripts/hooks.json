@@ -1,0 +1,21 @@
+[
+  {
+    "id": "github-deploy",
+    "execute-command": "/opt/blue-and-white-sky/scripts/deploy.sh",
+    "command-working-directory": "/opt/blue-and-white-sky",
+    "trigger-rule": {
+      "and": [
+        {
+          "match": {
+            "type": "value",
+            "value": "REPLACE_WITH_DEPLOY_TOKEN",
+            "parameter": {
+              "source": "header",
+              "name": "X-Deploy-Token"
+            }
+          }
+        }
+      ]
+    }
+  }
+]

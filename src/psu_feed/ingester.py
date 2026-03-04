@@ -7,27 +7,20 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import httpx
 import websockets
-from aiosqlite import Connection as SQLiteConnection
 
-from .config import get_authority_dids, JETSTREAM_WS_URL
-from .classifier import classify_posts as llm_classify_posts
+from .config import get_authority_dids, JETSTREAM_WS_URL, require_bluesky_credentials
 from .db import (
-    get_connection,
-    get_pending_posts,
+    get_session,
     init_db,
-    increment_likes,
-    increment_reposts,
-    increment_replies,
     insert_post,
     maybe_promote_authority,
     post_has_keyword_match,
-    update_post_classification,
     upsert_user_authority,
     increment_user_match_count,
 )
 from .filter import is_relevant_post
+from .queue import enqueue_classify, enqueue_engagement
 from . import settings as settings_module
 
 logging.basicConfig(level=logging.INFO)
@@ -103,15 +96,20 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     # Include quote reposts when the quoted post is in our DB with keyword_matched=1
     if not keyword_matched:
         quoted_uri = _quoted_post_uri_from_record(record)
-        if quoted_uri and await post_has_keyword_match(conn, quoted_uri):
-            keyword_matched = 1
+        if quoted_uri:
+            async with get_session() as session:
+                if await post_has_keyword_match(session, quoted_uri):
+                    keyword_matched = 1
             
     reply = record.get("reply")
     if isinstance(reply, dict) and "parent" in reply:
         parent_uri = reply["parent"].get("uri")
         if parent_uri:
-            await increment_replies(conn, parent_uri)
-            
+            try:
+                await enqueue_engagement("reply", parent_uri)
+            except Exception as e:
+                logger.warning("enqueue_engagement reply failed: %s", e)
+
     embed = record.get("embed")
     has_media = 0
     if isinstance(embed, dict):
@@ -129,16 +127,21 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     cid = commit.get("cid") or ""
     quoted_uri = _quoted_post_uri_from_record(record)
     # Live stream: insert as pending (llm_approved=0) and store text + quoted_uri for batch classification
-    await insert_post(
-        conn, uri, cid, did, created_at,
-        keyword_matched=keyword_matched, has_media=has_media,
-        llm_approved=0, post_text=text or None, quoted_post_uri=quoted_uri,
-    )
-    if did in authority_dids:
-        await upsert_user_authority(conn, did, HARDCODED_AUTHORITY)
-    else:
-        await increment_user_match_count(conn, did)
-        await maybe_promote_authority(conn, did, AUTHORITY_THRESHOLD, AUTHORITY_MULTIPLIER)
+    async with get_session() as session:
+        await insert_post(
+            session, uri, cid, did, created_at,
+            keyword_matched=keyword_matched, has_media=has_media,
+            llm_approved=0, post_text=text or None, quoted_post_uri=quoted_uri,
+        )
+        if did in authority_dids:
+            await upsert_user_authority(session, did, HARDCODED_AUTHORITY)
+        else:
+            await increment_user_match_count(session, did)
+            await maybe_promote_authority(session, did, AUTHORITY_THRESHOLD, AUTHORITY_MULTIPLIER)
+    try:
+        await enqueue_classify({"uri": uri, "text": text or "", "quoted_post_uri": quoted_uri})
+    except Exception as e:
+        logger.warning("enqueue_classify failed: %s", e)
     logger.info("indexed post did=%s uri=%s", did[:20], uri[:60])
 
 
@@ -152,12 +155,15 @@ def _subject_uri_from_record(record: dict) -> str | None:
     return None
 
 
-async def _handle_like_create(conn: SQLiteConnection, commit: dict) -> None:
+async def _handle_like_create(commit: dict) -> None:
     record = commit.get("record") or {}
     uri = _subject_uri_from_record(record)
     if not uri:
         return
-    await increment_likes(conn, uri)
+    try:
+        await enqueue_engagement("like", uri)
+    except Exception as e:
+        logger.warning("enqueue_engagement like failed: %s", e)
     logger.debug("like subject=%s", uri[:60])
 
 
@@ -166,74 +172,11 @@ async def _handle_repost_create(conn: SQLiteConnection, commit: dict) -> None:
     uri = _subject_uri_from_record(record)
     if not uri:
         return
-    await increment_reposts(conn, uri)
+    try:
+        await enqueue_engagement("repost", uri)
+    except Exception as e:
+        logger.warning("enqueue_engagement repost failed: %s", e)
     logger.debug("repost subject=%s", uri[:60])
-
-
-CLASSIFY_BATCH_SIZE = 50
-CLASSIFY_INTERVAL_SEC = 60
-BSKY_GET_POSTS_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts"
-
-
-async def _fetch_post_texts(uris: list[str]) -> dict[str, str]:
-    """Fetch post text for given URIs via Bluesky getPosts. Returns {uri: text}."""
-    out: dict[str, str] = {}
-    batch_size = 25
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for i in range(0, len(uris), batch_size):
-            batch = uris[i : i + batch_size]
-            params = [("uris", u) for u in batch]
-            try:
-                r = await client.get(BSKY_GET_POSTS_URL, params=params)
-            except Exception:
-                continue
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            for post in data.get("posts") or []:
-                uri = post.get("uri")
-                if not uri:
-                    continue
-                record = post.get("record") or {}
-                text = (record.get("text") or "").strip()
-                out[uri] = text
-    return out
-
-
-async def _classify_pending_loop() -> None:
-    """Every CLASSIFY_INTERVAL_SEC seconds, fetch pending posts and run LLM classification."""
-    import os
-    if not os.environ.get("GEMINI_API_KEY", "").strip():
-        logger.warning("GEMINI_API_KEY not set — LLM classification disabled; posts will stay pending")
-        return
-    while True:
-        await asyncio.sleep(CLASSIFY_INTERVAL_SEC)
-        conn = await get_connection()
-        try:
-            pending = await get_pending_posts(conn, limit=CLASSIFY_BATCH_SIZE)
-            # Only send posts that have text (main post or we'll add quoted)
-            quoted_uris = [q for _, _, q in pending if q and (q or "").strip()]
-            quoted_texts = await _fetch_post_texts(list(dict.fromkeys(quoted_uris))) if quoted_uris else {}
-            to_send = []
-            for uri, text, quoted_uri in pending:
-                if not (text or "").strip() and not quoted_texts.get(quoted_uri or ""):
-                    continue
-                item: dict = {"id": uri, "post": (text or "").strip()}
-                if quoted_uri and quoted_texts.get(quoted_uri):
-                    item["quoted_post"] = quoted_texts[quoted_uri]
-                to_send.append(item)
-            if not to_send:
-                continue
-            result = await llm_classify_posts(to_send)
-            updates = [(uri, 1 if result.get(uri, False) else 2) for uri, _, _ in pending]
-            await update_post_classification(conn, updates)
-            await conn.commit()
-            approved = sum(1 for _, v in updates if v == 1)
-            logger.info("classified %d posts: %d approved, %d rejected", len(updates), approved, len(updates) - approved)
-        except Exception as e:
-            logger.exception("classify_pending_loop error: %s", e)
-        finally:
-            await conn.close()
 
 
 async def _reload_settings_loop() -> None:
@@ -243,7 +186,7 @@ async def _reload_settings_loop() -> None:
         settings_module.reload_if_changed()
 
 
-async def _process_message(conn: SQLiteConnection, raw: str) -> None:
+async def _process_message(raw: str) -> None:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -258,14 +201,15 @@ async def _process_message(conn: SQLiteConnection, raw: str) -> None:
     if operation != "create":
         return
     if collection == "app.bsky.feed.post":
-        await _handle_post_create(conn, did, commit)
+        await _handle_post_create(did, commit)
     elif collection == "app.bsky.feed.like":
-        await _handle_like_create(conn, commit)
+        await _handle_like_create(commit)
     elif collection == "app.bsky.feed.repost":
-        await _handle_repost_create(conn, commit)
+        await _handle_repost_create(commit)
 
 
 async def run_ingester() -> None:
+    require_bluesky_credentials()
     await init_db()
     url = JETSTREAM_WS_URL
     params = "&".join(f"wantedCollections={c}" for c in WANTED_COLLECTIONS)
@@ -292,26 +236,17 @@ async def run_ingester() -> None:
                 ping_timeout=10,
                 close_timeout=5,
             ) as ws:
-                conn = await get_connection()
                 reload_task = asyncio.create_task(_reload_settings_loop())
-                classify_task = asyncio.create_task(_classify_pending_loop())
 
                 try:
                     async for message in ws:
-                        await _process_message(conn, message)
-                        await conn.commit()
+                        await _process_message(message)
                 finally:
                     reload_task.cancel()
-                    classify_task.cancel()
                     try:
                         await reload_task
                     except asyncio.CancelledError:
                         pass
-                    try:
-                        await classify_task
-                    except asyncio.CancelledError:
-                        pass
-                    await conn.close()
         except websockets.ConnectionClosed as e:
             # Normal for long-lived connections: server/network may drop without close frame
             logger.info("connection closed (%s), reconnecting in 5s", e)
