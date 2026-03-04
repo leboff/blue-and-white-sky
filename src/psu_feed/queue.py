@@ -1,4 +1,4 @@
-"""Redis-backed task queues for classification and engagement. ARQ worker settings."""
+"""Redis-backed task queues for classification and engagement. Uses a shared pool to avoid connection churn."""
 
 from __future__ import annotations
 
@@ -7,20 +7,35 @@ import logging
 from typing import Any
 
 import redis.asyncio as redis
+from redis.asyncio import ConnectionPool
 
 from .config import QUEUE_NAME_CLASSIFY, QUEUE_NAME_ENGAGEMENT, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
+# Shared pool so we don't open a new TCP connection per enqueue (avoids "Cannot assign requested address")
+_pool: ConnectionPool | None = None
 
-async def get_redis() -> redis.Redis:
-    """Return an async Redis connection (caller should close or use as context manager)."""
-    return redis.from_url(REDIS_URL, decode_responses=True)
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            max_connections=10,
+        )
+    return _pool
+
+
+def get_redis() -> redis.Redis:
+    """Return a Redis client using the shared pool. Call await client.aclose() when done to return the connection to the pool."""
+    return redis.Redis(connection_pool=_get_pool())
 
 
 async def enqueue_classify(payload: dict[str, Any]) -> None:
     """Push a classify job to the queue. payload: {uri, text, quoted_post_uri?}."""
-    r = await get_redis()
+    r = get_redis()
     try:
         await r.lpush(QUEUE_NAME_CLASSIFY, json.dumps(payload, ensure_ascii=False))
     finally:
@@ -29,7 +44,7 @@ async def enqueue_classify(payload: dict[str, Any]) -> None:
 
 async def enqueue_engagement(kind: str, subject_uri: str) -> None:
     """Push an engagement job. kind: 'like' | 'repost' | 'reply'."""
-    r = await get_redis()
+    r = get_redis()
     try:
         await r.lpush(QUEUE_NAME_ENGAGEMENT, json.dumps({"kind": kind, "subject_uri": subject_uri}))
     finally:
@@ -38,7 +53,7 @@ async def enqueue_engagement(kind: str, subject_uri: str) -> None:
 
 async def pop_classify_batch(max_size: int = 50) -> list[dict[str, Any]]:
     """Pop up to max_size classify jobs from the queue (batch for worker)."""
-    r = await get_redis()
+    r = get_redis()
     try:
         batch = []
         for _ in range(max_size):
@@ -56,7 +71,7 @@ async def pop_classify_batch(max_size: int = 50) -> list[dict[str, Any]]:
 
 async def pop_engagement_batch(max_size: int = 200) -> list[dict[str, Any]]:
     """Pop up to max_size engagement jobs from the queue."""
-    r = await get_redis()
+    r = get_redis()
     try:
         batch = []
         for _ in range(max_size):
