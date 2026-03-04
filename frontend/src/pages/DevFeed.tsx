@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { classifyPost, deletePost, getDevFeed, type DevPost } from '../api'
+import { classifyPost, deletePost, getDevFeed, setPostStatus, type DevPost } from '../api'
 
 export default function DevFeed() {
   const [data, setData] = useState<{ posts: DevPost[]; message?: string } | null>(null)
@@ -10,6 +10,7 @@ export default function DevFeed() {
   const [lookbackHours, setLookbackHours] = useState<number | null>(null)
   const [showAll, setShowAll] = useState(true)
   const [classifyingUri, setClassifyingUri] = useState<string | null>(null)
+  const [settingStatusUri, setSettingStatusUri] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -61,6 +62,26 @@ export default function DevFeed() {
       alert((e as Error).message)
     } finally {
       setClassifyingUri(null)
+    }
+  }
+
+  const handleSetStatus = async (post: DevPost, status: 'approved' | 'rejected') => {
+    setSettingStatusUri(post.uri)
+    try {
+      await setPostStatus(post.uri, status)
+      setData((d) => {
+        if (!d) return d
+        return {
+          ...d,
+          posts: d.posts.map((p) =>
+            p.uri === post.uri ? { ...p, llm_status: status } : p
+          ),
+        }
+      })
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setSettingStatusUri(null)
     }
   }
 
@@ -167,14 +188,31 @@ export default function DevFeed() {
                   <td style={{ padding: '0.5rem 0.75rem' }}>
                     <button
                       type="button"
-                      disabled={classifyingUri === post.uri}
+                      disabled={classifyingUri === post.uri || settingStatusUri === post.uri}
                       onClick={() => handleClassify(post)}
-                      style={{ padding: '0.25rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: classifyingUri === post.uri ? 'wait' : 'pointer' }}
+                      style={{ marginRight: '0.25rem', padding: '0.25rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #cbd5e1', cursor: classifyingUri === post.uri ? 'wait' : 'pointer' }}
+                      title="Run LLM classifier"
                     >
                       {classifyingUri === post.uri ? '…' : 'Classify'}
                     </button>
-                  </td>
-                  <td style={{ padding: '0.5rem 0.75rem' }}>
+                    <button
+                      type="button"
+                      disabled={settingStatusUri === post.uri}
+                      onClick={() => handleSetStatus(post, 'approved')}
+                      style={{ marginRight: '0.25rem', padding: '0.25rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #22c55e', background: '#dcfce7', color: '#166534', cursor: settingStatusUri === post.uri ? 'wait' : 'pointer' }}
+                      title="Manually approve"
+                    >
+                      {settingStatusUri === post.uri ? '…' : 'Approve'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={settingStatusUri === post.uri}
+                      onClick={() => handleSetStatus(post, 'rejected')}
+                      style={{ marginRight: '0.25rem', padding: '0.25rem 0.5rem', borderRadius: '0.25rem', border: '1px solid #ef4444', background: '#fee2e2', color: '#991b1b', cursor: settingStatusUri === post.uri ? 'wait' : 'pointer' }}
+                      title="Manually reject"
+                    >
+                      {settingStatusUri === post.uri ? '…' : 'Reject'}
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleDelete(post.uri)}

@@ -90,3 +90,17 @@ export async function classifyPost(uri: string, text: string, quoted_text?: stri
   }
   return data
 }
+
+export async function setPostStatus(uri: string, status: 'approved' | 'rejected'): Promise<{ ok: boolean; status: string }> {
+  const r = await fetch(`${BASE}/dev/feed/set-status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uri, status }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) {
+    const msg = typeof data.detail === 'string' ? data.detail : (data.detail?.msg ?? 'Set status failed')
+    throw new Error(msg)
+  }
+  return data
+}

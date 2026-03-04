@@ -154,3 +154,18 @@ async def dev_feed_classify_post(body: dict = Body(...)):
     async with get_session() as session:
         await update_post_classification(session, [(uri.strip(), 1 if relevant else 2)])
     return {"ok": True, "relevant": relevant}
+
+
+@router.post("/dev/feed/set-status")
+async def dev_feed_set_status(body: dict = Body(...)):
+    """Manually set a post's status to approved or rejected (no LLM). Body: {uri, status: "approved"|"rejected"}."""
+    uri = body.get("uri")
+    status = body.get("status")
+    if not uri or not isinstance(uri, str):
+        raise HTTPException(400, "body must include uri (string)")
+    if status not in ("approved", "rejected"):
+        raise HTTPException(400, "body must include status: 'approved' or 'rejected'")
+    llm_approved = 1 if status == "approved" else 2
+    async with get_session() as session:
+        await update_post_classification(session, [(uri.strip(), llm_approved)])
+    return {"ok": True, "status": status}
