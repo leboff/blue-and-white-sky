@@ -82,19 +82,30 @@ async def get_feed_skeleton(
     finally:
         await conn.close()
 
-    scored = [
-        (
-            uri,
-            calculate_hn_score(
-                likes,
-                reposts,
-                effective_authority_multiplier(mult, followers, keyword_matched),
-                created_at,
-                GRAVITY,
-            ),
+    scored_initial = []
+    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did in rows:
+        base_score = calculate_hn_score(
+            likes,
+            reposts,
+            replies,
+            has_media,
+            effective_authority_multiplier(mult, followers, keyword_matched),
+            created_at,
+            GRAVITY,
         )
-        for uri, likes, reposts, mult, followers, keyword_matched, created_at in rows
-    ]
+        scored_initial.append((uri, base_score, author_did))
+        
+    scored_initial.sort(key=lambda x: -x[1])
+    
+    author_counts = {}
+    scored = []
+    for uri, score, author_did in scored_initial:
+        count = author_counts.get(author_did, 0)
+        diversity_penalty = 0.8 ** count
+        final_score = score * diversity_penalty
+        author_counts[author_did] = count + 1
+        scored.append((uri, final_score))
+        
     scored.sort(key=lambda x: -x[1])
     top = scored[:limit]
     feed_list = [{"post": uri} for uri, _ in top]
@@ -123,19 +134,31 @@ async def _get_ranked_skeleton(
         rows = await get_recent_posts_with_authority(conn, lookback_hours)
     finally:
         await conn.close()
-    scored = [
-        (
-            uri,
-            calculate_hn_score(
-                likes,
-                reposts,
-                effective_authority_multiplier(mult, followers, keyword_matched),
-                created_at,
-                gravity,
-            ),
+        
+    scored_initial = []
+    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did in rows:
+        base_score = calculate_hn_score(
+            likes,
+            reposts,
+            replies,
+            has_media,
+            effective_authority_multiplier(mult, followers, keyword_matched),
+            created_at,
+            gravity,
         )
-        for uri, likes, reposts, mult, followers, keyword_matched, created_at in rows
-    ]
+        scored_initial.append((uri, base_score, author_did))
+        
+    scored_initial.sort(key=lambda x: -x[1])
+    
+    author_counts = {}
+    scored = []
+    for uri, score, author_did in scored_initial:
+        count = author_counts.get(author_did, 0)
+        diversity_penalty = 0.8 ** count
+        final_score = score * diversity_penalty
+        author_counts[author_did] = count + 1
+        scored.append((uri, final_score))
+        
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
 
@@ -144,29 +167,39 @@ async def _get_ranked_skeleton_with_meta(
     limit: int,
     lookback_hours: int,
     gravity: float,
-) -> list[tuple[str, float, float, int | None, str]]:
-    """Return [(uri, score, effective_authority_multiplier, followers_count, created_at), ...] for dev view."""
+) -> list[tuple[str, float, float, int | None, str, str]]:
+    """Return [(uri, score, effective_authority_multiplier, followers_count, created_at, author_did), ...] for dev view."""
     conn = await get_connection()
     try:
         rows = await get_recent_posts_with_authority(conn, lookback_hours)
     finally:
         await conn.close()
-    scored = [
-        (
-            uri,
-            calculate_hn_score(
-                likes,
-                reposts,
-                effective_authority_multiplier(mult, followers, keyword_matched),
-                created_at,
-                gravity,
-            ),
+        
+    scored_initial = []
+    for uri, likes, reposts, replies, has_media, mult, followers, keyword_matched, created_at, author_did in rows:
+        base_score = calculate_hn_score(
+            likes,
+            reposts,
+            replies,
+            has_media,
             effective_authority_multiplier(mult, followers, keyword_matched),
-            followers,
             created_at,
+            gravity,
         )
-        for uri, likes, reposts, mult, followers, keyword_matched, created_at in rows
-    ]
+        scored_initial.append((uri, base_score, effective_authority_multiplier(mult, followers, keyword_matched), followers, created_at, author_did))
+        
+    scored_initial.sort(key=lambda x: -x[1])
+    
+    author_counts = {}
+    scored = []
+    for item in scored_initial:
+        uri, score, eff_mult, followers, created_at, author_did = item
+        count = author_counts.get(author_did, 0)
+        diversity_penalty = 0.8 ** count
+        final_score = score * diversity_penalty
+        author_counts[author_did] = count + 1
+        scored.append((uri, final_score, eff_mult, followers, created_at, author_did))
+        
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
 
@@ -209,7 +242,7 @@ async def dev_feed(
         hydrated = await _hydrate_posts(uris)
         # Compute live score (Bluesky API engagement) for each so order and displayed score are correct
         with_scores = []
-        for uri, _db_score, mult, followers, created_at in ranked:
+        for uri, _db_score, mult, followers, created_at, author_did in ranked:
             post = hydrated.get(uri) or {}
             author = post.get("author") or {}
             handle = author.get("handle") or "?"
@@ -219,11 +252,19 @@ async def dev_feed(
             created = record.get("createdAt") or ""
             like_count = post.get("likeCount") or 0
             repost_count = post.get("repostCount") or 0
-            score = calculate_hn_score(like_count, repost_count, mult, created_at, g)
-            with_scores.append((score, uri, handle, display_name, text, like_count, repost_count, created))
+            reply_count = post.get("replyCount") or 0
+            embed = record.get("embed")
+            has_media = 0
+            if isinstance(embed, dict):
+                embed_type = embed.get("$type")
+                if embed_type in ("app.bsky.embed.images", "app.bsky.embed.video", "app.bsky.embed.external", "app.bsky.embed.recordWithMedia"):
+                    has_media = 1
+            
+            score = calculate_hn_score(like_count, repost_count, reply_count, has_media, mult, created_at, g)
+            with_scores.append((score, uri, handle, display_name, text, like_count, repost_count, reply_count, created))
         with_scores.sort(key=lambda x: -x[0])
         rows = []
-        for i, (score, uri, handle, display_name, text, like_count, repost_count, created) in enumerate(with_scores, 1):
+        for i, (score, uri, handle, display_name, text, like_count, repost_count, reply_count, created) in enumerate(with_scores, 1):
             uri_escaped = html.escape(uri, quote=True)
             rows.append(
                 f"""
@@ -231,7 +272,7 @@ async def dev_feed(
                     <td>{i}</td>
                     <td><strong>{html.escape(display_name)}</strong> @{html.escape(handle)}</td>
                     <td>{html.escape(text[:200])}{"…" if len(text) > 200 else ""}</td>
-                    <td>{like_count} / {repost_count}</td>
+                    <td>{like_count} / {repost_count} / {reply_count}</td>
                     <td>{score:.4f}</td>
                     <td>{html.escape(created[:19]) if created else ""}</td>
                     <td><a href="https://bsky.app/profile/{handle}/post/{uri.split('/')[-1]}" target="_blank">Open</a></td>
@@ -247,7 +288,7 @@ async def dev_feed(
         <a href="?limit={limit}&gravity={g}&lookback_hours=72">72h</a></p>
         <table border="1" cellpadding="8" style="border-collapse: collapse; width:100%;">
             <thead><tr>
-                <th>#</th><th>Author</th><th>Text</th><th>Likes / Reposts</th><th>Score</th><th>Created</th><th>Link</th><th></th>
+                <th>#</th><th>Author</th><th>Text</th><th>Likes / Reposts / Replies</th><th>Score</th><th>Created</th><th>Link</th><th></th>
             </tr></thead>
             <tbody>
                 {"".join(rows)}

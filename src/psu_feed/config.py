@@ -42,7 +42,7 @@ FEED_SERVICE_DID = os.environ.get("FEED_SERVICE_DID", "did:web:localhost")
 FEED_DISPLAY_NAME = os.environ.get("FEED_DISPLAY_NAME", "Blue and White Sky")
 FEED_DESCRIPTION = os.environ.get(
     "FEED_DESCRIPTION",
-    "Penn State football and other PSU coverage.",
+    "Penn State football and other PSU coverage. Work in progress.",
 )
 FEED_RKEY = os.environ.get("FEED_RKEY", "blue-and-white-sky")
 

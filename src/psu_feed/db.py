@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at TEXT NOT NULL,
     likes_count INTEGER NOT NULL DEFAULT 0,
     reposts_count INTEGER NOT NULL DEFAULT 0,
+    replies_count INTEGER NOT NULL DEFAULT 0,
+    has_media INTEGER NOT NULL DEFAULT 0,
     keyword_matched INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (author_did) REFERENCES users(did)
 );
@@ -56,6 +58,12 @@ async def init_db(db_path: Path | None = None) -> None:
         if "keyword_matched" not in pcols:
             await conn.execute("ALTER TABLE posts ADD COLUMN keyword_matched INTEGER NOT NULL DEFAULT 1")
             await conn.commit()
+        if "replies_count" not in pcols:
+            await conn.execute("ALTER TABLE posts ADD COLUMN replies_count INTEGER NOT NULL DEFAULT 0")
+            await conn.commit()
+        if "has_media" not in pcols:
+            await conn.execute("ALTER TABLE posts ADD COLUMN has_media INTEGER NOT NULL DEFAULT 0")
+            await conn.commit()
     finally:
         await conn.close()
 
@@ -67,10 +75,11 @@ async def insert_post(
     author_did: str,
     created_at: datetime,
     keyword_matched: int = 1,
+    has_media: int = 0,
 ) -> None:
     await conn.execute(
-        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched) VALUES (?, ?, ?, ?, ?)",
-        (uri, cid, author_did, created_at.isoformat(), keyword_matched),
+        "INSERT OR IGNORE INTO posts (uri, cid, author_did, created_at, keyword_matched, has_media) VALUES (?, ?, ?, ?, ?, ?)",
+        (uri, cid, author_did, created_at.isoformat(), keyword_matched, has_media),
     )
 
 
@@ -120,6 +129,13 @@ async def increment_reposts(conn: aiosqlite.Connection, subject_uri: str) -> Non
     )
 
 
+async def increment_replies(conn: aiosqlite.Connection, subject_uri: str) -> None:
+    await conn.execute(
+        "UPDATE posts SET replies_count = replies_count + 1 WHERE uri = ?",
+        (subject_uri,),
+    )
+
+
 async def post_has_keyword_match(conn: aiosqlite.Connection, uri: str) -> bool:
     """True if the post exists in the DB and had keyword_matched=1 (used for quote-repost inclusion)."""
     cursor = await conn.execute(
@@ -147,12 +163,12 @@ async def delete_post(conn: aiosqlite.Connection, uri: str) -> bool:
 async def get_recent_posts_with_authority(
     conn: aiosqlite.Connection,
     lookback_hours: int,
-) -> list[tuple[str, int, int, float, int | None, int, str]]:
-    """Returns (uri, likes_count, reposts_count, authority_multiplier, followers_count, keyword_matched, created_at)."""
+) -> list[tuple[str, int, int, int, int, float, int | None, int, str, str]]:
+    """Returns (uri, likes_count, reposts_count, replies_count, has_media, authority_multiplier, followers_count, keyword_matched, created_at, author_did)."""
     cursor = await conn.execute(
         """
-        SELECT p.uri, p.likes_count, p.reposts_count, COALESCE(u.authority_multiplier, 1.0), u.followers_count,
-               COALESCE(p.keyword_matched, 1), p.created_at
+        SELECT p.uri, p.likes_count, p.reposts_count, p.replies_count, p.has_media, COALESCE(u.authority_multiplier, 1.0), u.followers_count,
+               COALESCE(p.keyword_matched, 1), p.created_at, p.author_did
         FROM posts p
         LEFT JOIN users u ON p.author_did = u.did
         WHERE datetime(p.created_at) >= datetime('now', ?)
@@ -161,4 +177,4 @@ async def get_recent_posts_with_authority(
         (f"-{lookback_hours} hours",),
     )
     rows = await cursor.fetchall()
-    return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]
+    return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]) for r in rows]

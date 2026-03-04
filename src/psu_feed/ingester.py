@@ -16,6 +16,7 @@ from .db import (
     init_db,
     increment_likes,
     increment_reposts,
+    increment_replies,
     insert_post,
     maybe_promote_authority,
     post_has_keyword_match,
@@ -100,6 +101,20 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
         quoted_uri = _quoted_post_uri_from_record(record)
         if quoted_uri and await post_has_keyword_match(conn, quoted_uri):
             keyword_matched = 1
+            
+    reply = record.get("reply")
+    if isinstance(reply, dict) and "parent" in reply:
+        parent_uri = reply["parent"].get("uri")
+        if parent_uri:
+            await increment_replies(conn, parent_uri)
+            
+    embed = record.get("embed")
+    has_media = 0
+    if isinstance(embed, dict):
+        embed_type = embed.get("$type")
+        if embed_type in ("app.bsky.embed.images", "app.bsky.embed.video", "app.bsky.embed.external", "app.bsky.embed.recordWithMedia"):
+            has_media = 1
+
     # Authority DIDs: include all posts (keyword_matched=0 when no PSU keywords). Others: only when keywords match (or quote of match).
     authority_dids = get_authority_dids()
     if did not in authority_dids and not keyword_matched:
@@ -108,7 +123,7 @@ async def _handle_post_create(conn: SQLiteConnection, did: str, commit: dict) ->
     uri = _build_post_uri(did, path)
     created_at = _parse_created_at(record) or datetime.now(timezone.utc)
     cid = commit.get("cid") or ""
-    await insert_post(conn, uri, cid, did, created_at, keyword_matched=keyword_matched)
+    await insert_post(conn, uri, cid, did, created_at, keyword_matched=keyword_matched, has_media=has_media)
     if did in authority_dids:
         await upsert_user_authority(conn, did, HARDCODED_AUTHORITY)
     else:

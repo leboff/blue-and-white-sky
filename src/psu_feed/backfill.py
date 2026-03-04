@@ -154,17 +154,35 @@ def _followers_from_author(author) -> int | None:
     return None
 
 
+def _has_media_from_post(post) -> int:
+    record = _record_dict(post)
+    embed = record.get("embed")
+    if embed is None:
+        embed = getattr(getattr(post, "record", None), "embed", None)
+        
+    if isinstance(embed, dict):
+        t = embed.get("$type", "")
+        if t in ("app.bsky.embed.images", "app.bsky.embed.video", "app.bsky.embed.external", "app.bsky.embed.recordWithMedia"):
+            return 1
+            
+    t = getattr(embed, "$type", getattr(embed, "py_type", ""))
+    if t in ("app.bsky.embed.images", "app.bsky.embed.video", "app.bsky.embed.external", "app.bsky.embed.recordWithMedia"):
+        return 1
+        
+    return 0
+
+
 def _backfill_authority(
     client: Client,
     keyword_matched_uris: set[str],
     verbose: bool = False,
     skip_filter: bool = False,
     max_pages_per_author: int = 5,
-) -> list[tuple[str, str, str, datetime, int | None, int]]:
+) -> list[tuple[str, str, str, datetime, int | None, int, int]]:
     """Fetch recent posts from each authority account; return (uri, cid, author_did, created_at, followers_count, keyword_matched).
     keyword_matched_uris: set of URIs that count as keyword-matched (DB + batch); updated when we add a matched post (for quote inclusion).
     """
-    all_rows: list[tuple[str, str, str, datetime, int | None, int]] = []
+    all_rows: list[tuple[str, str, str, datetime, int | None, int, int]] = []
     seen_uris: set[str] = set()
     for did, label in get_authority_accounts():
         cursor = None
@@ -224,7 +242,8 @@ def _backfill_authority(
                     author = getattr(post, "author", None)
                     author_did = author.did if author else did
                     followers = _followers_from_author(author)
-                    all_rows.append((uri, cid, author_did, created, followers, keyword_matched))
+                    has_media = _has_media_from_post(post)
+                    all_rows.append((uri, cid, author_did, created, followers, keyword_matched, has_media))
                     count_this += 1
                 cursor = getattr(resp, "cursor", None)
                 if not cursor:
@@ -245,7 +264,7 @@ def _backfill_search(
     until: str | None,
     verbose: bool = False,
     max_pages_per_query: int = DEFAULT_SEARCH_MAX_PAGES,
-) -> list[tuple[str, str, str, datetime, int | None, int]]:
+) -> list[tuple[str, str, str, datetime, int | None, int, int]]:
     """Search by keywords; return (uri, cid, author_did, created_at, followers_count, keyword_matched).
     Includes posts that match keywords or that quote a post in keyword_matched_uris.
     """
@@ -309,7 +328,8 @@ def _backfill_search(
                     keyword_matched_uris.add(uri)
                     cid = getattr(post, "cid", "") or ""
                     followers = _followers_from_author(author)
-                    to_insert.append((uri, cid, author_did, created, followers, 1))
+                    has_media = _has_media_from_post(post)
+                    to_insert.append((uri, cid, author_did, created, followers, 1, has_media))
                     matched_this_query += 1
                 cursor = getattr(resp, "cursor", None)
                 if not cursor:
@@ -327,13 +347,13 @@ def _backfill_search(
 
 
 async def _write_batch(
-    rows: list[tuple[str, str, str, datetime, int | None, int]],
+    rows: list[tuple[str, str, str, datetime, int | None, int, int]],
     authority_dids: set[str],
 ) -> None:
     conn = await get_connection()
     try:
-        for uri, cid, author_did, created_at, followers_count, keyword_matched in rows:
-            await insert_post(conn, uri, cid, author_did, created_at, keyword_matched=keyword_matched)
+        for uri, cid, author_did, created_at, followers_count, keyword_matched, has_media in rows:
+            await insert_post(conn, uri, cid, author_did, created_at, keyword_matched=keyword_matched, has_media=has_media)
             if author_did in authority_dids:
                 await upsert_user_authority(conn, author_did, HARDCODED_AUTHORITY)
             else:
@@ -407,7 +427,7 @@ def main() -> None:
     client = Client()
     client.login(BLUESKY_HANDLE, BLUESKY_APP_PASSWORD)
 
-    all_rows: list[tuple[str, str, str, datetime, int | None, int]] = []
+    all_rows: list[tuple[str, str, str, datetime, int | None, int, int]] = []
     if do_authority and get_authority_accounts():
         auth_rows = _backfill_authority(
             client,
