@@ -1,8 +1,8 @@
-# Stage 1: build frontend (SPA at /admin)
-FROM node:20-alpine AS frontend-builder
+# Stage 1: build frontend (SPA at /admin). Use Debian-based image so Rollup optional deps install (Alpine/musl often breaks them).
+FROM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
