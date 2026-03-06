@@ -13,12 +13,15 @@ GET_POSTS_BATCH = 25
 async def get_chronological_skeleton(
     limit: int,
     lookback_hours: int,
+    cursor: str | None = None,
 ) -> list[tuple[str, float]]:
-    """Return [(uri, score), ...] for the newest posts."""
+    """Return [(uri, score), ...] for the newest posts. If cursor is set, return posts older than that URI."""
     async with get_session() as session:
-        rows = await get_recent_posts_with_authority(session, lookback_hours)
+        rows = await get_recent_posts_with_authority(
+            session, lookback_hours, cursor_uri=cursor, limit=limit
+        )
 
-    return [(row.uri, 0.0) for row in rows[:limit]]
+    return [(row.uri, 0.0) for row in rows]
 
 
 async def get_chronological_skeleton_with_meta(

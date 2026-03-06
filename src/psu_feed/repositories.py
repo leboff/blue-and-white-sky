@@ -105,18 +105,29 @@ async def get_recent_posts_with_authority(
     session: AsyncSession,
     lookback_hours: int,
     include_pending_rejected: bool = False,
+    cursor_uri: str | None = None,
+    limit: int | None = None,
 ) -> list[PostWithAuthority]:
     where_llm = "" if include_pending_rejected else " AND p.llm_approved = 1"
+    where_cursor = ""
+    if cursor_uri:
+        where_cursor = " AND (datetime(p.created_at), p.uri) < (SELECT datetime(created_at), uri FROM posts WHERE uri = :cursor_uri)"
+    limit_clause = "" if limit is None else " LIMIT :limit"
     sql = text(f"""
         SELECT p.uri, p.likes_count, p.reposts_count, p.replies_count, p.has_media,
                COALESCE(u.authority_multiplier, 1.0) AS authority_multiplier, u.followers_count,
                COALESCE(p.keyword_matched, 1) AS keyword_matched, p.created_at, p.author_did, COALESCE(p.llm_approved, 1) AS llm_approved
         FROM posts p
         LEFT JOIN users u ON p.author_did = u.did
-        WHERE datetime(p.created_at) >= datetime('now', :lookback){where_llm}
-        ORDER BY p.created_at DESC
+        WHERE datetime(p.created_at) >= datetime('now', :lookback){where_llm}{where_cursor}
+        ORDER BY p.created_at DESC{limit_clause}
     """)
-    r = await session.execute(sql, {"lookback": f"-{lookback_hours} hours"})
+    params: dict = {"lookback": f"-{lookback_hours} hours"}
+    if cursor_uri:
+        params["cursor_uri"] = cursor_uri
+    if limit is not None:
+        params["limit"] = limit
+    r = await session.execute(sql, params)
     rows = r.fetchall()
     return [
         PostWithAuthority(

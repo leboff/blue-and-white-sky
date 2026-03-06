@@ -69,6 +69,7 @@ async def get_feed_skeleton(
     scored = await get_chronological_skeleton(
         limit=limit,
         lookback_hours=POSTS_LOOKBACK_HOURS,
+        cursor=cursor,
     )
     feed_list = [{"post": uri} for uri, _ in scored]
 
