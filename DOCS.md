@@ -69,6 +69,29 @@ Loaded from `.env` in the project root (via `python-dotenv`). Main variables:
 | `PSU_FEED_AUTHORITY_OFFTOPIC_PENALTY` | Multiplier for authority posts that don’t match PSU keywords (default `0.25`; lower = rank lower). |
 | `GEMINI_API_KEY` | Google AI API key for LLM post classification (live stream only). If unset, ingester still inserts posts but they remain pending. |
 | `GEMINI_CLASSIFIER_MODEL` | Gemini model id (default `gemini-2.5-flash-lite`). |
+| `REDIS_URL` | Redis URL for task queues (default `redis://localhost:6379`). |
+| `PSU_FEED_QUEUE_MAX_CLASSIFY` | Max length of classify queue; oldest jobs dropped when exceeded (default `50000`). |
+| `PSU_FEED_QUEUE_MAX_ENGAGEMENT` | Max length of engagement queue (default `200000`). |
+
+---
+
+## Server / Redis (production)
+
+On Linux, Redis may log: **"Memory overcommit must be enabled!"** Without it, background saves (RDB) can fail and Redis may be killed under memory pressure. On the **host** (not inside the container), run:
+
+```bash
+sudo sysctl vm.overcommit_memory=1
+```
+
+To make it persistent across reboots, add to `/etc/sysctl.conf`:
+
+```
+vm.overcommit_memory = 1
+```
+
+Then run `sudo sysctl -p` or reboot.
+
+If Redis had grown to several GB (e.g. "RDB memory usage when created 6835.57 Mb"), the classify and engagement queues were unbounded. The app now caps queue lengths via `LTRIM`; you can tune `PSU_FEED_QUEUE_MAX_CLASSIFY` and `PSU_FEED_QUEUE_MAX_ENGAGEMENT` if needed.
 
 ---
 

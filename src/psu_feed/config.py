@@ -67,3 +67,6 @@ FEED_LIMIT = 50
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 QUEUE_NAME_CLASSIFY = "psu_feed:classify"
 QUEUE_NAME_ENGAGEMENT = "psu_feed:engagement"
+# Cap queue lengths so Redis memory stays bounded if workers fall behind (LTRIM after each LPUSH)
+QUEUE_MAX_LEN_CLASSIFY = int(os.environ.get("PSU_FEED_QUEUE_MAX_CLASSIFY", "50000"))
+QUEUE_MAX_LEN_ENGAGEMENT = int(os.environ.get("PSU_FEED_QUEUE_MAX_ENGAGEMENT", "200000"))

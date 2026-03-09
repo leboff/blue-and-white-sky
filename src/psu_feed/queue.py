@@ -9,7 +9,13 @@ from typing import Any
 import redis.asyncio as redis
 from redis.asyncio import ConnectionPool
 
-from .config import QUEUE_NAME_CLASSIFY, QUEUE_NAME_ENGAGEMENT, REDIS_URL
+from .config import (
+    QUEUE_MAX_LEN_CLASSIFY,
+    QUEUE_MAX_LEN_ENGAGEMENT,
+    QUEUE_NAME_CLASSIFY,
+    QUEUE_NAME_ENGAGEMENT,
+    REDIS_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +40,21 @@ def get_redis() -> redis.Redis:
 
 
 async def enqueue_classify(payload: dict[str, Any]) -> None:
-    """Push a classify job to the queue. payload: {uri, text, quoted_post_uri?}."""
+    """Push a classify job to the queue. payload: {uri, text, quoted_post_uri?}. List is capped to QUEUE_MAX_LEN_CLASSIFY."""
     r = get_redis()
     try:
         await r.lpush(QUEUE_NAME_CLASSIFY, json.dumps(payload, ensure_ascii=False))
+        await r.ltrim(QUEUE_NAME_CLASSIFY, 0, QUEUE_MAX_LEN_CLASSIFY - 1)
     finally:
         await r.aclose()
 
 
 async def enqueue_engagement(kind: str, subject_uri: str) -> None:
-    """Push an engagement job. kind: 'like' | 'repost' | 'reply'."""
+    """Push an engagement job. kind: 'like' | 'repost' | 'reply'. List is capped to QUEUE_MAX_LEN_ENGAGEMENT."""
     r = get_redis()
     try:
         await r.lpush(QUEUE_NAME_ENGAGEMENT, json.dumps({"kind": kind, "subject_uri": subject_uri}))
+        await r.ltrim(QUEUE_NAME_ENGAGEMENT, 0, QUEUE_MAX_LEN_ENGAGEMENT - 1)
     finally:
         await r.aclose()
 
