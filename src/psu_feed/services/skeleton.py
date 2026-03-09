@@ -32,12 +32,12 @@ async def get_chronological_skeleton_with_meta(
     """Return [(uri, score, eff_mult, followers, created_at, author_did, llm_approved), ...]. llm_approved: 0=pending, 1=approved, 2=rejected."""
     async with get_session() as session:
         rows = await get_recent_posts_with_authority(
-            session, lookback_hours, include_pending_rejected=include_pending_rejected
+            session, lookback_hours, include_pending_rejected=include_pending_rejected, limit=limit
         )
 
     return [
         (row.uri, 0.0, 1.0, row.followers_count, row.created_at, row.author_did, row.llm_approved)
-        for row in rows[:limit]
+        for row in rows
     ]
 
 

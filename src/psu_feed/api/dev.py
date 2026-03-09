@@ -40,9 +40,9 @@ async def dev_feed(
     if not show_all:
         async with get_session() as session:
             rows = await get_recent_posts_with_authority(
-                session, lookback, include_pending_rejected=False
+                session, lookback, include_pending_rejected=False, limit=500
             )
-        uris_refresh = [row.uri for row in rows][:500]
+        uris_refresh = [row.uri for row in rows]
         if uris_refresh:
             hydrated_refresh = await hydrate_posts(uris_refresh)
             updates = []
