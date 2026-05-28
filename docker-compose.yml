@@ -24,7 +24,7 @@ services:
       - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD}
       - FEED_SERVICE_DID=${FEED_SERVICE_DID}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-
+      - GEMINI_CLASSIFIER_MODEL=${GEMINI_CLASSIFIER_MODEL}
   ingester:
     build: .
     command: python -m psu_feed.ingester
