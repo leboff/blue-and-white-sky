@@ -21,7 +21,13 @@ router = APIRouter()
 @router.get("/.well-known/did.json")
 async def well_known_did(request: Request):
     """Serve did:web DID document so Bluesky can resolve FEED_SERVICE_DID to this server."""
-    base = str(request.base_url).rstrip("/")
+    # The feed-gen spec requires an HTTPS endpoint. Behind Cloudflare/Traefik the
+    # request arrives as plain http, so derive the endpoint from the did:web host
+    # instead of request.base_url (which advertised http:// and broke the AppView).
+    if FEED_SERVICE_DID.startswith("did:web:"):
+        base = "https://" + FEED_SERVICE_DID[len("did:web:"):].replace("%3A", ":")
+    else:
+        base = str(request.base_url).rstrip("/").replace("http://", "https://", 1)
     return JSONResponse(
         content={
             "id": FEED_SERVICE_DID,
